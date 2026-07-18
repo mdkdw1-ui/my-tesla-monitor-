@@ -30,10 +30,17 @@ android {
     }
     buildFeatures {
         compose = true
-        viewBinding = true // 🌟 구글맵 내부 라이브러리(maps-ktx)의 종속성 요구 해결
+        viewBinding = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
+    }
+}
+
+// 🌟 [핵심 수정] 구글맵 내부 라이브러리가 구버전 viewbinding(7.4.2)을 강제하여 발생하는 빌드 붕괴 차단
+configurations.all {
+    resolutionStrategy {
+        force("androidx.databinding:viewbinding:8.2.2")
     }
 }
 
@@ -44,7 +51,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // Jetpack Compose BOM 및 UI 툴킷
+    // Jetpack Compose UI 툴킷
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -52,10 +59,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
 
-    // 네이티브 비동기 네트워크 통신 킷
+    // 네이티브 비동기 네트워크 통신
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     
-    // 가장 매칭률이 높은 안정적인 구글 맵 컴포즈 킷
+    // 안정화된 구글 맵 컴포즈 엔진
     implementation("com.google.maps.android:maps-compose:4.3.0")
     implementation("com.google.android.gms:play-services-maps:18.2.0")
 }
