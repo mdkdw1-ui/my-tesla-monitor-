@@ -30,17 +30,10 @@ android {
     }
     buildFeatures {
         compose = true
-        viewBinding = true
+        // 🌟 불필요한 viewBinding 플래그를 완전히 제거하여 정리
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
-    }
-}
-
-// 🌟 [핵심 수정] 구글맵 내부 라이브러리가 구버전 viewbinding(7.4.2)을 강제하여 발생하는 빌드 붕괴 차단
-configurations.all {
-    resolutionStrategy {
-        force("androidx.databinding:viewbinding:8.2.2")
     }
 }
 
@@ -51,7 +44,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // Jetpack Compose UI 툴킷
+    // Jetpack Compose BOM 및 UI 툴킷 정의
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -59,10 +52,12 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
 
-    // 네이티브 비동기 네트워크 통신
+    // 네이티브 비동기 네트워크 통신 킷
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     
-    // 안정화된 구글 맵 컴포즈 엔진
-    implementation("com.google.maps.android:maps-compose:4.3.0")
+    // 🌟 [핵심 수정] 구글맵 확장팩 내부에서 꼬여서 올라오는 viewbinding 의존성을 완벽하게 도려냄(exclude)
+    implementation("com.google.maps.android:maps-compose:4.3.0") {
+        exclude(group = "androidx.databinding", module = "viewbinding")
+    }
     implementation("com.google.android.gms:play-services-maps:18.2.0")
 }
