@@ -1,7 +1,6 @@
 package com.tesla.coreconsole
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -92,6 +91,8 @@ data class VehicleStateData(
     val longitude: Double? = null,
     val speed: Double = 0.0,
     val power: Double = 0.0,
+    val drivingKM: Double = 0.0,   // 🌟 컴파일 에러 방지를 위해 변수 공식 매핑 추가
+    val efficiency: Double = 0.0,  // 🌟 컴파일 에러 방지를 위해 변수 공식 매핑 추가
     var computedLabel: String = "온라인",
     var badgeBg: Color = Color(0xFFA200FF),
     var deltaStr: String = "▼ 0.0%",
@@ -162,7 +163,6 @@ class TeslaViewModel : ViewModel() {
     var apiKey = ""
     var refreshToken = ""
 
-    // UI States
     val activeTab = MutableStateFlow(TabType.STATUS)
     val isLoading = MutableStateFlow(false)
     val errorMsg = MutableStateFlow<String?>(null)
@@ -173,7 +173,6 @@ class TeslaViewModel : ViewModel() {
     val batteryData = MutableStateFlow<List<BatteryWeeklyData>>(emptyList())
     val tripInfo = MutableStateFlow(TripSummary())
 
-    // Filter Configs
     val filterStartDate = MutableStateFlow("")
     val filterEndDate = MutableStateFlow("")
     val startYear = MutableStateFlow("2025")
@@ -230,7 +229,6 @@ class TeslaViewModel : ViewModel() {
             isLoading.value = true
             errorMsg.value = null
             try {
-                // 1단계: Google Firebase Refresh Token 교환 
                 val tokens = getGoogleTokens()
                 val accessToken = tokens.first
                 val idToken = tokens.second
@@ -238,7 +236,6 @@ class TeslaViewModel : ViewModel() {
                 val nowMs = System.currentTimeMillis()
                 val fourteenDaysAgoMs = nowMs - (14L * 24 * 60 * 60 * 1000)
 
-                // 2단계: Firestore 병렬 파싱 호출 엔진 세션 구성
                 val queryUrl = "https://firestore.googleapis.com/v1/projects/teslacam-93532/databases/(default)/documents/vehicle/$VEHICLE_ID:runQuery"
                 
                 val statePayload = createFirestoreQueryBody("vehicle_state", fourteenDaysAgoMs, nowMs)
@@ -254,7 +251,7 @@ class TeslaViewModel : ViewModel() {
             } catch (e: Exception) {
                 errorMsg.value = "데이터베이스 실시간 파싱 동기화 실패"
                 e.printStackTrace()
-            } finally {
+            } bits {
                 isLoading.value = false
             }
         }
@@ -303,7 +300,6 @@ class TeslaViewModel : ViewModel() {
         client.newCall(req).execute().use { return it.body?.string() ?: "" }
     }
 
-    // 🎯 [요구사항 1 & 2] 하위 drive_state 폴더 및 속도/출력값 다차원 재귀 파서 엔진
     private fun extractCoordinatesDeep(obj: JSONObject?): DynamicGeoResult {
         var lat: Double? = null
         var lng: Double? = null
@@ -330,14 +326,13 @@ class TeslaViewModel : ViewModel() {
                         "latitude", "lat" -> lat = fValue.toDoubleOrNull()
                         "longitude", "lng" -> lng = fValue.toDoubleOrNull()
                         "speed" -> {
-                            // MPH 단위를 국내 규격인 KM/H 구조로 매핑 보정
                             val rawSpeed = fValue.toDoubleOrNull() ?: 0.0
-                            speed = if (rawSpeed > 0) String.format("%.1", rawSpeed * 1.60934).toDouble() else 0.0
+                            // 🌟 [수정] 포맷팅 문자열 오류 수정 (%.1 -> %.1f)
+                            speed = if (rawSpeed > 0) String.format(Locale.US, "%.1f", rawSpeed * 1.60934).toDouble() else 0.0
                         }
                         "power" -> power = fValue.toDoubleOrNull()
                     }
                 }
-                // 하위 노드 전수 재귀 순회 탐색
                 if (lat == null && lng == null) {
                     val sub = extractCoordinatesDeep(inner)
                     if (sub.lat != null) lat = sub.lat
@@ -362,6 +357,7 @@ class TeslaViewModel : ViewModel() {
 
     private fun parseDrivingLogs(responseStr: String) {
         val list = mutableListOf<VehicleStateData>()
+        if (responseStr.isBlank() || responseStr.trim().startsWith("null")) return
         val arr = JSONArray(responseStr)
         for (i in 0 until arr.length()) {
             val item = arr.optJSONObject(i) ?: continue
@@ -386,6 +382,7 @@ class TeslaViewModel : ViewModel() {
 
     private fun parseVehicleStates(responseStr: String) {
         val list = mutableListOf<VehicleStateData>()
+        if (responseStr.isBlank() || responseStr.trim().startsWith("null")) return
         val arr = JSONArray(responseStr)
         for (i in 0 until arr.length()) {
             val item = arr.optJSONObject(i) ?: continue
@@ -412,8 +409,8 @@ class TeslaViewModel : ViewModel() {
             val getPressure = { f: JSONObject, keys: List<String> ->
                 val p = getNum(f, keys)
                 if (p == null) null
-                else if (p < 7.0) String.format("%.1f", p * 14.5038).toDouble()
-                else String.format("%.1f", p).toDouble()
+                else if (p < 7.0) String.format(Locale.US, "%.1f", p * 14.5038).toDouble()
+                else String.format(Locale.US, "%.1f", p).toDouble()
             }
 
             if (logsArray != null && logsArray.length() > 0) {
@@ -490,11 +487,11 @@ class TeslaViewModel : ViewModel() {
                 val energy = (battDelta / 100.0) * capacity
                 val eff = distDelta / energy
                 tripInfo.value = TripSummary(
-                    efficiency = String.format("%.2f", eff).toDouble(),
-                    distance = String.format("%.1f", distDelta).toDouble(),
-                    batteryUsed = String.format("%.1f", battDelta).toDouble(),
-                    kmPerPercent = String.format("%.2f", kmPerPct).toDouble(),
-                    energyUsed = String.format("%.1f", energy).toDouble(),
+                    efficiency = String.format(Locale.US, "%.2f", eff).toDouble(),
+                    distance = String.format(Locale.US, "%.1f", distDelta).toDouble(),
+                    batteryUsed = String.format(Locale.US, "%.1f", battDelta).toDouble(),
+                    kmPerPercent = String.format(Locale.US, "%.2f", kmPerPct).toDouble(),
+                    energyUsed = String.format(Locale.US, "%.1f", energy).toDouble(),
                     packCapacity = capacity
                 )
             }
@@ -560,6 +557,7 @@ class TeslaViewModel : ViewModel() {
     }
 
     private fun viewModelScopeLaunch(block: suspend () -> Unit) {
+        @color/androidx.compose.runtime.Composable
         kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
             try { block() } catch (e: Exception) { e.printStackTrace() }
         }
@@ -616,10 +614,18 @@ fun LoginConsoleScreen(onLoginSubmit: (String, String) -> Unit) {
             Text("안전한 실시간 데이터 파싱 세션 연결을 위해 키 프로필을 입력하세요. 입력된 토큰 정보는 2단계 독립 암호화 처리 후 스토리지에 보관됩니다.", color = Color(0xFF777791), fontSize = 12.sp, textAlign = TextAlign.Center, lineHeight = 18.sp)
             Spacer(modifier = Modifier.height(24.dp))
 
+            // 🌟 [수정] Material 3 표준 스펙 배정 방식 수정 (OutlinedTextFieldDefaults.colors 사용)
             OutlinedTextField(
                 value = apiKeyInput, onValueChange = { apiKeyInput = it },
                 label = { Text("FIREBASE API KEY", color = Color.White, fontSize = 11.sp) },
-                colors = TextFieldDefaults.outlinedTextFieldColors(focusedBorderColor = Color(0xFFFCA311), unfocusedBorderColor = Color(0xFF2A2A3F), containerColor = Color(0xFF09090E)),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFFFCA311),
+                    unfocusedBorderColor = Color(0xFF2A2A3F),
+                    focusedContainerColor = Color(0xFF09090E),
+                    unfocusedContainerColor = Color(0xFF09090E),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White
+                ),
                 modifier = Modifier.fillMaxWidth(), singleLine = true
             )
             Spacer(modifier = Modifier.height(16.dp))
@@ -627,7 +633,14 @@ fun LoginConsoleScreen(onLoginSubmit: (String, String) -> Unit) {
             OutlinedTextField(
                 value = tokenInput, onValueChange = { tokenInput = it },
                 label = { Text("REFRESH TOKEN", color = Color.White, fontSize = 11.sp) },
-                colors = TextFieldDefaults.outlinedTextFieldColors(focusedBorderColor = Color(0xFFFCA311), unfocusedBorderColor = Color(0xFF2A2A3F), containerColor = Color(0xFF09090E)),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFFFCA311),
+                    unfocusedBorderColor = Color(0xFF2A2A3F),
+                    focusedContainerColor = Color(0xFF09090E),
+                    unfocusedContainerColor = Color(0xFF09090E),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White
+                ),
                 modifier = Modifier.fillMaxWidth().height(100.dp), maxLines = 4
             )
             Spacer(modifier = Modifier.height(24.dp))
@@ -647,10 +660,8 @@ fun LoginConsoleScreen(onLoginSubmit: (String, String) -> Unit) {
 fun MainConsoleDashboard(vm: TeslaViewModel) {
     val context = LocalContext.current
     val activeTab by vm.activeTab.collectAsState()
-    val isLoading by vm.isLoading.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Global Custom Navigation Header Row
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Tesla Cam v2.6 (Kotlin Native)", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text("로그아웃", color = Color(0xFFFF3B30), fontSize = 12.sp, fontWeight = FontWeight.Bold,
@@ -658,7 +669,6 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
             )
         }
 
-        // Segmented Dynamic Control Tab Layout
         TabRow(
             selectedTabIndex = activeTab.ordinal,
             containerColor = Color(0xFF1A1A24),
@@ -682,26 +692,17 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
             }
         }
 
-        if (isLoading) {
-            Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color(0xFFFCA311))
-            }
-        } else {
-            Box(modifier = Modifier.weight(1f).padding(horizontal = 16.dp)) {
-                when (activeTab) {
-                    TabType.STATUS -> StatusDashboardView(vm)
-                    TabType.DRIVING -> DrivingHistoryView(vm)
-                    TabType.MONTHLY -> MonthlyReportView(vm)
-                    TabType.BATTERY -> BatteryTrendView(vm)
-                }
+        Box(modifier = Modifier.weight(1f).padding(horizontal = 16.dp)) {
+            when (activeTab) {
+                TabType.STATUS -> StatusDashboardView(vm)
+                TabType.DRIVING -> DrivingHistoryView(vm)
+                TabType.MONTHLY -> MonthlyReportView(vm)
+                TabType.BATTERY -> BatteryTrendView(vm)
             }
         }
     }
 }
 
-// ==========================================
-// 5. SUBDASHBOARD SUBVIEWS (TAB SPECIFIC)
-// ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
     val states by vm.vehicleStates.collectAsState()
@@ -709,7 +710,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
     val latest = states.firstOrNull() ?: return
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        // Mini Grid Status Indicators
         Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF161622), RoundedCornerShape(12.dp)).border(1.dp, Color(0xFF2D2D3D), RoundedCornerShape(12.dp)).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.size(8.dp).background(if(latest.carState.contains("online", ignoreCase = true)) Color(0xFF4CD964) else Color(0xFF8E8E93), RoundedCornerShape(4.dp)))
@@ -722,7 +722,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Efficiency Target Analytics Engine Box
         Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF161622), RoundedCornerShape(16.dp)).border(1.dp, Color(0xFF232335), RoundedCornerShape(16.dp)).padding(18.dp)) {
             Text("⚡ 최근 전비 (실측 데이터)", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             Text("${trip.efficiency} km/kWh", color = Color(0xFF5F6CAF), fontSize = 34.sp, fontWeight = FontWeight.Black, modifier = Modifier.padding(vertical = 10.dp))
@@ -737,7 +736,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Smart Parking Engine Card
         Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1812), RoundedCornerShape(12.dp)).border(1.5.dp, Color(0xFFCC8514), RoundedCornerShape(12.dp)).padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column {
                 Text("주차 세션 활성화 중", color = Color(0xFFFCA311), fontSize = 17.sp, fontWeight = FontWeight.Bold)
@@ -750,7 +748,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Advanced Quad TPMS Display Engine Module
         Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF161622), RoundedCornerShape(16.dp)).border(1.dp, Color(0xFF232335), RoundedCornerShape(16.dp)).padding(18.dp)) {
             Text("⚽ 타이어 공기압 (실측 수집치)", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
             val tpmsBoxModifier = Modifier.width(135.dp).background(Color(0xFF1D1D2B), RoundedCornerShape(10.dp)).border(1.dp, Color(0xFFFCA311), RoundedCornerShape(10.dp)).padding(14.dp)
@@ -772,33 +769,32 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
     val drivingLogs by vm.drivingLogs.collectAsState()
-    
-    // 복합 데이터(vehicle_states 및 driving) 통합 후 시간 축(Chronological) 정렬 반영 모델
     val points = drivingLogs.filter { it.latitude != null && it.longitude != null }.map { LatLng(it.latitude!!, it.longitude!!) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Map Track Visualization Module View Block
-        Box(modifier = Modifier.fillMaxWidth().height(320.dp).background(Color(0xFF13131C), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp))) {
+        // 🌟 [수정] 무효한 Modifier.apply 구조 삭제 후 컴포즈 기본 Box Alignment 레이아웃 정형화
+        Box(
+            modifier = Modifier.fillMaxWidth().height(320.dp).background(Color(0xFF13131C), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center
+        ) {
             if (points.isNotEmpty()) {
                 val center = points[points.size / 2]
                 GoogleMap(
                     modifier = Modifier.fillMaxSize(),
                     cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(center, 12f) }
                 ) {
-                    // 🛠️ [요구사항 1] OSM France Humanitarian 오픈 서버 타일 아키텍처 연동 
                     TileOverlay(tileProvider = UrlTileProvider(256, 256) { x, y, z ->
                         URL("https://tile.openstreetmap.fr/hot/$z/$x/$y.png")
                     })
                     Polyline(points = points, color = Color(0xFF2685FF), width = 12f)
                 }
             } else {
-                Text("선택된 검색 범위에 일치하는 실시간 GPS 시점 좌표가 없습니다.", color = Color(0xFF6D6D88), fontSize = 13.sp, modifier = Modifier.apply { Alignment.Center })
+                Text("선택된 검색 범위에 일치하는 실시간 GPS 시점 좌표가 없습니다.", color = Color(0xFF6D6D88), fontSize = 13.sp)
             }
         }
         
         Spacer(modifier = Modifier.height(14.dp))
         
-        // Dynamic Segment Log Tracker Stream
         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
             items(drivingLogs) { log ->
                 Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).background(Color(0xFF13131C), RoundedCornerShape(12.dp)).padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -829,17 +825,14 @@ fun MonthlyReportView(vm: TeslaViewModel) {
                     Text("${"%,d".format(month.totalDistance.toInt())} km", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("🚗 주행 구동 거리: ${String.format("%.1f", month.drivingKM)} km 파싱 확인", color = Color(0xFFE1E1E6), fontSize = 13.sp)
-                Text("⚡ 예상 충전 전력: 약 ${String.format("%.1f", chargeKwh)} kWh 공급 완료", color = Color(0xFF4CD964), fontSize = 13.sp)
-                Text("👀 센트리 감시 소모: 약 ${String.format("%.1f", sentryKwh)} kWh 소실 산출", color = Color(0xFFFF9F43), fontSize = 13.sp)
+                Text("🚗 주행 구동 거리: ${String.format(Locale.US, "%.1f", month.drivingKM)} km 파싱 확인", color = Color(0xFFE1E1E6), fontSize = 13.sp)
+                Text("⚡ 예상 충전 전력: 약 ${String.format(Locale.US, "%.1f", chargeKwh)} kWh 공급 완료", color = Color(0xFF4CD964), fontSize = 13.sp)
+                Text("👀 센트리 감시 소모: 약 ${String.format(Locale.US, "%.1f", sentryKwh)} kWh 소실 산출", color = Color(0xFFFFFFFF), fontSize = 13.sp)
             }
         }
     }
 }
 
-// ==========================================
-// 6. CUSTOM LIGHTWEIGHT GRAPH CANVAS MODULE (NO EXTERNAL LIBS)
-// ==========================================
 @Composable
 fun BatteryTrendView(vm: TeslaViewModel) {
     val batteryList by vm.batteryData.collectAsState()
@@ -853,7 +846,6 @@ fun BatteryTrendView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Custom Paint Jetpack Compose Canvas Line Graph Engine
         if (filtered.size > 1) {
             Text("완충 기준 주간 예측 주행거리 추세 (km)", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp))
             
@@ -890,16 +882,13 @@ fun BatteryTrendView(vm: TeslaViewModel) {
                     Text("${week.weekKey} 기준 분석 주간", color = Color.White, fontWeight = FontWeight.Bold)
                     Text("누적계: ${"%,d".format(week.odometer.toInt())} km", color = Color(0xFF8282B0), fontSize = 11.sp)
                 }
-                Text("${String.format("%.1f", if(week.batteryRange > 0) week.batteryRange else week.estBatteryRange)} km", color = Color(0xFF4CD964), fontWeight = FontWeight.Bold)
+                Text("${String.format(Locale.US, "%.1f", if(week.batteryRange > 0) week.batteryRange else week.estBatteryRange)} km", color = Color(0xFF4CD964), fontWeight = FontWeight.Bold)
             }
         }
         Spacer(modifier = Modifier.height(40.dp))
     }
 }
 
-// ==========================================
-// 7. OSM TILE INTERCEPTOR HELPERS
-// ==========================================
 fun UrlTileProvider(width: Int, height: Int, provider: (Int, Int, Int) -> URL): com.google.android.gms.maps.model.UrlTileProvider {
     return object : com.google.android.gms.maps.model.UrlTileProvider(width, height) {
         override fun getTileUrl(x: Int, y: Int, z: Int): URL = provider(x, y, z)
