@@ -244,7 +244,7 @@ class TeslaViewModel : ViewModel() {
             } catch (e: Exception) {
                 errorMsg.value = "데이터 동기화 통합 서브넷 실패"
                 e.printStackTrace()
-            } bits {
+            } finally { // 🌟 [오타 정정 완료] bits -> finally
                 isLoading.value = false
             }
         }
@@ -609,7 +609,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (하단 가변 증감 스코프 활성화)
+// 4-A. 차량 상태 탭
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
@@ -654,7 +654,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-B. 주행 정보 탭 (지도 동기화 추적선 가동)
+// 4-B. 주행 정보 탭
 // ==========================================
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
@@ -695,7 +695,7 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-C. 월간 내역 탭 (중괄호 문자열 결합 완벽 패치)
+// 4-C. 월간 내역 탭
 // ==========================================
 @Composable
 fun MonthlyReportView(vm: TeslaViewModel) {
@@ -720,7 +720,6 @@ fun MonthlyReportView(vm: TeslaViewModel) {
                     Text("시작: $sYear-$sMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { expanded = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
                     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.background(Color(0xFF252538))) {
                         yearOptions.forEach { y -> monthOptions.forEach { m ->
-                            // 🌟 [최종 수정] 문법 오인 차단을 위해 중괄호 가두기 완료 (${y}년 ${m}월)
                             DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { sYear = y; sMonth = m; expanded = false })
                         }}
                     }
@@ -732,7 +731,6 @@ fun MonthlyReportView(vm: TeslaViewModel) {
                     Text("종료: $eYear-$eMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { expanded = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
                     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.background(Color(0xFF252538))) {
                         yearOptions.forEach { y -> monthOptions.forEach { m ->
-                            // 🌟 [최종 수정] 문법 오인 차단을 위해 중괄호 가두기 완료 (${y}년 ${m}월)
                             DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { eYear = y; eMonth = m; expanded = false })
                         }}
                     }
@@ -764,7 +762,7 @@ fun MonthlyReportView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-D. 배터리 탭 (수치 지표 스케일링 복원)
+// 4-D. 배터리 탭
 // ==========================================
 @Composable
 fun BatteryTrendView(vm: TeslaViewModel) {
