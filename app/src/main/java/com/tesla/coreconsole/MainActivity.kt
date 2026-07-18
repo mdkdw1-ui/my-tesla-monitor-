@@ -32,6 +32,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -91,8 +92,8 @@ data class VehicleStateData(
     val longitude: Double? = null,
     val speed: Double = 0.0,
     val power: Double = 0.0,
-    val drivingKM: Double = 0.0,   // 🌟 컴파일 에러 방지를 위해 변수 공식 매핑 추가
-    val efficiency: Double = 0.0,  // 🌟 컴파일 에러 방지를 위해 변수 공식 매핑 추가
+    val drivingKM: Double = 0.0,
+    val efficiency: Double = 0.0,
     var computedLabel: String = "온라인",
     var badgeBg: Color = Color(0xFFA200FF),
     var deltaStr: String = "▼ 0.0%",
@@ -225,7 +226,8 @@ class TeslaViewModel : ViewModel() {
     }
 
     fun fetchAllData() {
-        viewModelScopeLaunch {
+        // 🌟 [수정] 오타 범벅이었던 매핑 함수 제거 후 표준화된 코루틴 안전 스코프 배치
+        CoroutineScope(Dispatchers.IO).launch {
             isLoading.value = true
             errorMsg.value = null
             try {
@@ -251,7 +253,7 @@ class TeslaViewModel : ViewModel() {
             } catch (e: Exception) {
                 errorMsg.value = "데이터베이스 실시간 파싱 동기화 실패"
                 e.printStackTrace()
-            } bits {
+            } finally {
                 isLoading.value = false
             }
         }
@@ -327,7 +329,6 @@ class TeslaViewModel : ViewModel() {
                         "longitude", "lng" -> lng = fValue.toDoubleOrNull()
                         "speed" -> {
                             val rawSpeed = fValue.toDoubleOrNull() ?: 0.0
-                            // 🌟 [수정] 포맷팅 문자열 오류 수정 (%.1 -> %.1f)
                             speed = if (rawSpeed > 0) String.format(Locale.US, "%.1f", rawSpeed * 1.60934).toDouble() else 0.0
                         }
                         "power" -> power = fValue.toDoubleOrNull()
@@ -555,13 +556,6 @@ class TeslaViewModel : ViewModel() {
         }
         batteryData.value = list.sortedBy { it.weekKey }
     }
-
-    private fun viewModelScopeLaunch(block: suspend () -> Unit) {
-        @color/androidx.compose.runtime.Composable
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-            try { block() } catch (e: Exception) { e.printStackTrace() }
-        }
-    }
 }
 
 // ==========================================
@@ -614,7 +608,6 @@ fun LoginConsoleScreen(onLoginSubmit: (String, String) -> Unit) {
             Text("안전한 실시간 데이터 파싱 세션 연결을 위해 키 프로필을 입력하세요. 입력된 토큰 정보는 2단계 독립 암호화 처리 후 스토리지에 보관됩니다.", color = Color(0xFF777791), fontSize = 12.sp, textAlign = TextAlign.Center, lineHeight = 18.sp)
             Spacer(modifier = Modifier.height(24.dp))
 
-            // 🌟 [수정] Material 3 표준 스펙 배정 방식 수정 (OutlinedTextFieldDefaults.colors 사용)
             OutlinedTextField(
                 value = apiKeyInput, onValueChange = { apiKeyInput = it },
                 label = { Text("FIREBASE API KEY", color = Color.White, fontSize = 11.sp) },
@@ -772,7 +765,6 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
     val points = drivingLogs.filter { it.latitude != null && it.longitude != null }.map { LatLng(it.latitude!!, it.longitude!!) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 🌟 [수정] 무효한 Modifier.apply 구조 삭제 후 컴포즈 기본 Box Alignment 레이아웃 정형화
         Box(
             modifier = Modifier.fillMaxWidth().height(320.dp).background(Color(0xFF13131C), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
