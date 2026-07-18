@@ -169,7 +169,6 @@ class TeslaViewModel : ViewModel() {
     val batteryData = MutableStateFlow<List<BatteryWeeklyData>>(emptyList())
     val tripInfo = MutableStateFlow(TripSummary())
 
-    // 🌟 월간 데이터 조회를 위한 년/월 독립 드랍다운 상태 정의
     val startYear = MutableStateFlow("2025")
     val startMonth = MutableStateFlow("01")
     val endYear = MutableStateFlow("2026")
@@ -239,13 +238,13 @@ class TeslaViewModel : ViewModel() {
                 val drivingRes = postRequest(queryUrl, accessToken, drivingPayload)
 
                 parseVehicleStates(stateRes)
-                parseDrivingLogs(drivingRes) // 🌟 리팩토링된 주행정보 파서 매핑
+                parseDrivingLogs(drivingRes)
                 fetchMonthlyReport(accessToken)
                 fetchBatteryTrend(idToken)
             } catch (e: Exception) {
                 errorMsg.value = "데이터 동기화 통합 서브넷 실패"
                 e.printStackTrace()
-            } finally {
+            } bits {
                 isLoading.value = false
             }
         }
@@ -288,7 +287,6 @@ class TeslaViewModel : ViewModel() {
         client.newCall(req).execute().use { return it.body?.string() ?: "" }
     }
 
-    // 🌟 [주행기록 완전 복원] 복잡하게 중첩된 Firestore Response의 구조적 결함을 격파하는 통합 필드 스캐너
     private fun parseDrivingLogs(responseStr: String) {
         val list = mutableListOf<VehicleStateData>()
         if (responseStr.isBlank() || responseStr.trim().startsWith("null")) return
@@ -303,7 +301,6 @@ class TeslaViewModel : ViewModel() {
                     ?: fields.optJSONObject("date")?.optLong("integerValue") ?: 0L
                 if (dDate == 0L) continue
 
-                // 내재된 데이터타입 혼재 유형(DoubleString/Primitive)을 모두 방어
                 val dKM = fields.optJSONObject("drivingKM")?.optString("doubleValue")?.toDoubleOrNull()
                     ?: fields.optJSONObject("drivingKM")?.optDouble("doubleValue") ?: 0.0
                 val dEff = fields.optJSONObject("efficiency")?.optString("doubleValue")?.toDoubleOrNull()
@@ -329,7 +326,6 @@ class TeslaViewModel : ViewModel() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        // 최상단 지도 연동을 위해 시간순 정렬
         drivingLogs.value = list.sortedBy { it.date }
     }
 
@@ -402,7 +398,6 @@ class TeslaViewModel : ViewModel() {
 
         list.sortByDescending { it.date }
         
-        // 🌟 [변화 감지 매핑] 이전 인덱스와 비교하여 배터리% 및 주행거리에 변동이 있을 때만 증감량 변화 필드 표기
         if (list.size >= 2) {
             for (idx in 0 until list.size - 1) {
                 val current = list[idx]
@@ -476,8 +471,6 @@ class TeslaViewModel : ViewModel() {
             }
             val uniqueMap = mutableMapOf<String, MonthlyData>()
             rawList.forEach { if(it.monthKey.isNotEmpty()) uniqueMap[it.monthKey] = it }
-            
-            // 🌟 [최신순 배치 수정] 내림차순 정렬을 적용하여 최신 월 정보가 가장 위에 배치되도록 재매핑
             monthlyData.value = uniqueMap.values.sortedByDescending { it.monthKey }
         }
     }
@@ -616,7 +609,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (요청 스펙 반영 완료)
+// 4-A. 차량 상태 탭 (하단 가변 증감 스코프 활성화)
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
@@ -624,7 +617,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
     val latest = states.firstOrNull() ?: return
 
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        // 🌟 [스크린샷 대응] 요청하신 콤팩트 카드 컴포넌트 상단 고정
         Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(16.dp)).border(1.dp, Color(0xFF252538), RoundedCornerShape(16.dp)).padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("🔘 타이어 공기압", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
@@ -645,7 +637,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 🌟 [요청 기능] 화면 아래 배치 및 변동 정보가 존재할 때만 활성화되는 가변 컴포넌트 레이어
         if (latest.deltaStr.isNotEmpty()) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1812), RoundedCornerShape(12.dp)).border(1.5.dp, latest.deltaColor, RoundedCornerShape(12.dp)).padding(16.dp)) {
                 Text("🔄 최근 세션 실시간 변화 감지", color = Color(0xFFFCA311), fontSize = 14.sp, fontWeight = FontWeight.Bold)
@@ -653,7 +644,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 Text(latest.deltaStr, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             }
         } else {
-            // 변동 수치가 없는 경우의 기본 정보 노출 대체 영역
             Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF161622), RoundedCornerShape(12.dp)).padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("🔋 배터리 레벨: ${latest.batteryLevel?.toInt() ?: "--"}%", color = Color.White, fontSize = 13.sp)
                 Text("🛣️ 총 주행거리: ${latest.odometer?.toInt()?.let { "%,d km".format(it) } ?: "-- km"}", color = Color.White, fontSize = 13.sp)
@@ -664,7 +654,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-B. 주행 정보 탭 (데이터 패치 완전 매핑)
+// 4-B. 주행 정보 탭 (지도 동기화 추적선 가동)
 // ==========================================
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
@@ -705,7 +695,7 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-C. 월간 내역 탭 (드랍다운 양방향 필터 구성)
+// 4-C. 월간 내역 탭 (중괄호 문자열 결합 완벽 패치)
 // ==========================================
 @Composable
 fun MonthlyReportView(vm: TeslaViewModel) {
@@ -720,7 +710,6 @@ fun MonthlyReportView(vm: TeslaViewModel) {
     val monthOptions = (1..12).map { "%02d".format(it) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 🌟 [요청 기능] 상단 배치형 년/월 독립식 드랍다운 필터 바 아키텍처
         Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF161622), RoundedCornerShape(12.dp)).padding(10.dp)) {
             Text("🗓️ 통합 조회 기간 설정", color = Color(0xFFFCA311), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(6.dp))
@@ -731,7 +720,8 @@ fun MonthlyReportView(vm: TeslaViewModel) {
                     Text("시작: $sYear-$sMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { expanded = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
                     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.background(Color(0xFF252538))) {
                         yearOptions.forEach { y -> monthOptions.forEach { m ->
-                            DropdownMenuItem(text = { Text("$y년 $m월", color = Color.White, fontSize = 12.sp) }, onClick = { sYear = y; sMonth = m; expanded = false })
+                            // 🌟 [최종 수정] 문법 오인 차단을 위해 중괄호 가두기 완료 (${y}년 ${m}월)
+                            DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { sYear = y; sMonth = m; expanded = false })
                         }}
                     }
                 }
@@ -742,7 +732,8 @@ fun MonthlyReportView(vm: TeslaViewModel) {
                     Text("종료: $eYear-$eMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { expanded = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
                     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.background(Color(0xFF252538))) {
                         yearOptions.forEach { y -> monthOptions.forEach { m ->
-                            DropdownMenuItem(text = { Text("$y년 $m월", color = Color.White, fontSize = 12.sp) }, onClick = { eYear = y; eMonth = m; expanded = false })
+                            // 🌟 [최종 수정] 문법 오인 차단을 위해 중괄호 가두기 완료 (${y}년 ${m}월)
+                            DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { eYear = y; eMonth = m; expanded = false })
                         }}
                     }
                 }
@@ -751,7 +742,6 @@ fun MonthlyReportView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // 드랍다운 수식 조건에 맞춰 인덱스 매핑 필터링
         val startBound = "$sYear-$sMonth"
         val endBound = "$eYear-$eMonth"
         val filteredReports = reports.filter { it.monthKey >= startBound && it.monthKey <= endBound }
@@ -774,7 +764,7 @@ fun MonthlyReportView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-D. 배터리 탭 (세로축 정밀 렌더링 스펙 반영)
+// 4-D. 배터리 탭 (수치 지표 스케일링 복원)
 // ==========================================
 @Composable
 fun BatteryTrendView(vm: TeslaViewModel) {
@@ -801,7 +791,6 @@ fun BatteryTrendView(vm: TeslaViewModel) {
                     val width = size.width
                     val height = size.height
                     
-                    // 🌟 [요청 기능] Native Canvas 정렬 엔진을 통한 세로축 수치 지표 정밀 렌더링
                     val paint = android.graphics.Paint().apply {
                         color = android.graphics.Color.GRAY
                         textSize = 28f
@@ -813,7 +802,6 @@ fun BatteryTrendView(vm: TeslaViewModel) {
                         val value = minVal + (deltaY / gridLines) * i
                         val yPos = height - (i * (height / gridLines))
                         drawContext.canvas.nativeCanvas.drawText("${value.toInt()}km", -15f, yPos + 10f, paint)
-                        // 배경 가이드 라인선 주입
                         drawLine(color = Color(0xFF252538), start = Offset(0f, yPos), end = Offset(width, yPos), strokeWidth = 2f)
                     }
 
