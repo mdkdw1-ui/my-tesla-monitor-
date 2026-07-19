@@ -24,8 +24,6 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -104,7 +102,9 @@ data class VehicleStateData(
     var batteryDelta: Double = 0.0,
     var distanceDelta: Double = 0.0,
     var durationStr: String = "",
-    var timeRangeStr: String = ""
+    var timeRangeStr: String = "",
+    // 🛠️ [조절] 실측 주행의 고정밀 이동 좌표 리스트 보관용 필드 추가 (기본값 제공으로 하위 호환성 유지)
+    val pathPoints: List<LatLng> = emptyList()
 )
 
 data class TripSummary(
@@ -150,7 +150,7 @@ object EncryptEngine {
 }
 
 // ==========================================
-// 3. VIEWMODEL LAYER (텍스트 덤프 기능 장착)
+// 3. VIEWMODEL LAYER
 // ==========================================
 class TeslaViewModel : ViewModel() {
     private val VEHICLE_ID = "3744141651867089"
@@ -165,10 +165,6 @@ class TeslaViewModel : ViewModel() {
     val activeTab = MutableStateFlow(TabType.STATUS)
     val isLoading = MutableStateFlow(false)
     val errorMsg = MutableStateFlow<String?>(null)
-
-    // 🛠️ 스키마 분석용 Raw JSON 상태 흐름 필드 추가
-    val rawJsonState = MutableStateFlow("")
-    val rawJsonDriving = MutableStateFlow("")
 
     val vehicleStates = MutableStateFlow<List<VehicleStateData>>(emptyList())
     val drivingLogs = MutableStateFlow<List<VehicleStateData>>(emptyList())
@@ -199,14 +195,23 @@ class TeslaViewModel : ViewModel() {
         updateCombinedDrivingPoints()
     }
 
+    // 🛠️ [조절] 수집된 location_list 내부의 다중 좌표 배열을 지도 동선에 통째로 결합 빌드하도록 개선
     private fun updateCombinedDrivingPoints() {
         val statePoints = vehicleStates.value
             .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 }
             .map { Pair(it.date, LatLng(it.latitude!!, it.longitude!!)) }
 
-        val drivePoints = drivingLogs.value
-            .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 }
-            .map { Pair(it.date, LatLng(it.latitude!!, it.longitude!!)) }
+        val drivePoints = mutableListOf<Pair<Long, LatLng>>()
+        drivingLogs.value.forEach { log ->
+            if (log.pathPoints.isNotEmpty()) {
+                // 배열 내 다중 좌표들을 시간 순서 유지를 위해 미세 인덱스 오프셋을 붙여 순차 로딩
+                log.pathPoints.forEachIndexed { idx, latLng ->
+                    drivePoints.add(Pair(log.date + idx, latLng))
+                }
+            } else if (log.latitude != null && log.longitude != null && log.latitude != 0.0 && log.longitude != 0.0) {
+                drivePoints.add(Pair(log.date, LatLng(log.latitude, log.longitude)))
+            }
+        }
 
         _combinedDrivingPoints.value = (statePoints + drivePoints)
             .sortedBy { it.first }
@@ -221,7 +226,7 @@ class TeslaViewModel : ViewModel() {
             apiKey = EncryptEngine.decrypt(savedKey)
             refreshToken = EncryptEngine.decrypt(savedToken)
             _isLoggedIn.value = true
-            fetchAllData(context)
+            fetchAllData()
         }
     }
 
@@ -240,7 +245,7 @@ class TeslaViewModel : ViewModel() {
             apiKey = keyInput.trim()
             refreshToken = tokenInput.trim()
             _isLoggedIn.value = true
-            fetchAllData(context)
+            fetchAllData()
         } catch (e: Exception) {
             onFail("보안 엔진 초기화 실패")
         }
@@ -253,14 +258,11 @@ class TeslaViewModel : ViewModel() {
         apiKey = ""
         refreshToken = ""
         vehicleStates.value = emptyList()
-        rawJsonState.value = ""
-        rawJsonDriving.value = ""
         _combinedDrivingPoints.value = emptyList()
         seedBackupDrivingData()
     }
 
-    // 🛠️ 파일 저장을 위해 Context 파라미터 구조 수신 연동
-    fun fetchAllData(context: Context) {
+    fun fetchAllData() {
         CoroutineScope(Dispatchers.IO).launch {
             isLoading.value = true
             errorMsg.value = null
@@ -280,12 +282,6 @@ class TeslaViewModel : ViewModel() {
                 val stateRes = postRequest(queryUrl, accessToken, statePayload)
                 val drivingRes = postRequest(queryUrl, accessToken, drivingPayload)
 
-                // 🛠️ [덤프 기능 활성화] 수신 데이터를 상태용 흐름에 파싱 전 선제 백업 보관 및 파일 저장
-                rawJsonState.value = stateRes
-                rawJsonDriving.value = drivingRes
-                saveTextFileDump(context, "vehicle_state_schema.txt", stateRes)
-                saveTextFileDump(context, "driving_schema.txt", drivingRes)
-
                 parseVehicleStates(stateRes)
                 parseNetworkDrivingLogs(drivingRes)
                 fetchMonthlyReport(accessToken)
@@ -296,18 +292,6 @@ class TeslaViewModel : ViewModel() {
             } finally {
                 isLoading.value = false
             }
-        }
-    }
-
-    // 🛠️ 폰 내부 로컬 전용 파일 출력 스트림엔진 구축
-    private fun saveTextFileDump(context: Context, filename: String, content: String) {
-        try {
-            context.openFileOutput(filename, Context.MODE_PRIVATE).use { output ->
-                output.write(content.toByteArray())
-            }
-            android.util.Log.d("SCHEMA_DUMP", "[$filename] 로컬 저장 성공! 경로: ${context.filesDir}/$filename")
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
@@ -331,7 +315,7 @@ class TeslaViewModel : ViewModel() {
                         put("op", "AND")
                         put("filters", JSONArray().apply {
                             put(JSONObject().apply { put("fieldFilter", JSONObject().apply { put("field", JSONObject().apply { put("fieldPath", "date") }); put("op", "GREATER_THAN_OR_EQUAL"); put("value", JSONObject().apply { put("integerValue", fromMs.toString()) }) }) })
-                            put(JSONObject().apply { put("fieldFilter", JSONObject().apply { put("field", JSONObject().apply { put("fieldPath", "date") }); put("op", "LESS_THAN_OR_EQUAL"); put("value", JSONObject().apply { put("integerValue", fromMs.toString()) }) }) })
+                            put(JSONObject().apply { put("fieldFilter", JSONObject().apply { put("field", JSONObject().apply { put("fieldPath", "date") }); put("op", "LESS_THAN_OR_EQUAL"); put("value", JSONObject().apply { put("integerValue", toMs.toString()) }) }) })
                         })
                     })
                 })
@@ -348,6 +332,7 @@ class TeslaViewModel : ViewModel() {
         client.newCall(req).execute().use { return it.body?.string() ?: "" }
     }
 
+    // 🛠️ [조절] 확인된 Firestore 실측 driving 스키마 규격으로 완벽하게 연동 가공
     private fun parseNetworkDrivingLogs(responseStr: String) {
         if (responseStr.isBlank() || responseStr.trim().startsWith("null")) return
         val list = mutableListOf<VehicleStateData>()
@@ -362,24 +347,50 @@ class TeslaViewModel : ViewModel() {
                     ?: fields.optJSONObject("date")?.optLong("integerValue") ?: 0L
                 if (dDate == 0L) continue
 
-                val dKM = fields.optJSONObject("drivingKM")?.optString("doubleValue")?.toDoubleOrNull()
-                    ?: fields.optJSONObject("drivingKM")?.optDouble("doubleValue") ?: 0.0
-                val dEff = fields.optJSONObject("efficiency")?.optString("doubleValue")?.toDoubleOrNull()
-                    ?: fields.optJSONObject("efficiency")?.optDouble("doubleValue") ?: 0.0
+                // 1) 기존 구형 필드 대신 실측 필드인 moveKM 데이터 가져오기
+                val dKM = fields.optJSONObject("moveKM")?.optString("doubleValue")?.toDoubleOrNull()
+                    ?: fields.optJSONObject("moveKM")?.optDouble("doubleValue") ?: 0.0
 
-                var lat = fields.optJSONObject("latitude")?.optString("doubleValue")?.toDoubleOrNull() ?: fields.optJSONObject("latitude")?.optDouble("doubleValue")
-                var lng = fields.optJSONObject("longitude")?.optString("doubleValue")?.toDoubleOrNull() ?: fields.optJSONObject("longitude")?.optDouble("doubleValue")
+                // 2) useBattery(소모 배터리 %) 및 배터리 총팩 용량(62.1 kWh)을 기준으로 실시간 전비 계산 연산
+                val useBattery = fields.optJSONObject("useBattery")?.optString("doubleValue")?.toDoubleOrNull()
+                    ?: fields.optJSONObject("useBattery")?.optDouble("doubleValue") ?: 0.0
+                val efficiency = if (useBattery > 0.0) {
+                    val kwhUsed = (useBattery / 100.0) * 62.1
+                    if (kwhUsed > 0.0) String.format(Locale.US, "%.2f", dKM / kwhUsed).toDoubleOrNull() ?: 0.0 else 0.0
+                } else 0.0
 
-                val geoVal = fields.optJSONObject("geoPointValue")
-                if (geoVal != null) {
-                    lat = geoVal.optDouble("latitude")
-                    lng = geoVal.optDouble("longitude")
+                // 3) 주행 소요 시간 필드 파싱 (UI 표출용)
+                val durationStr = fields.optJSONObject("drivingTime")?.optString("stringValue") ?: ""
+
+                // 4) 핵심: location_list 배열 내부의 다중 고정밀 위경도 매핑 추출
+                val pathPoints = mutableListOf<LatLng>()
+                val locListObj = fields.optJSONObject("location_list")
+                val locArray = locListObj?.optJSONObject("arrayValue")?.optJSONArray("values")
+                if (locArray != null) {
+                    for (j in 0 until locArray.length()) {
+                        val locItem = locArray.optJSONObject(j) ?: continue
+                        val locFields = locItem.optJSONObject("mapValue")?.optJSONObject("fields") ?: continue
+                        val lat = locFields.optJSONObject("latitude")?.optDouble("doubleValue") ?: 0.0
+                        val lng = locFields.optJSONObject("longitude")?.optDouble("doubleValue") ?: 0.0
+                        if (lat != 0.0 && lng != 0.0) {
+                            pathPoints.add(LatLng(lat, lng))
+                        }
+                    }
                 }
+
+                // 대표 좌표는 궤적의 마지막 지점으로 바인딩하여 안정성 확보
+                val primaryLat = pathPoints.lastOrNull()?.latitude
+                val primaryLng = pathPoints.lastOrNull()?.longitude
 
                 list.add(VehicleStateData(
                     id = doc.optString("name").split("/").lastOrNull() ?: "",
-                    date = dDate, drivingKM = dKM, efficiency = dEff,
-                    latitude = lat, longitude = lng
+                    date = dDate, 
+                    drivingKM = dKM, 
+                    efficiency = efficiency,
+                    latitude = primaryLat, 
+                    longitude = primaryLng,
+                    durationStr = durationStr,
+                    pathPoints = pathPoints
                 ))
             }
         } catch (e: Exception) {
@@ -460,7 +471,7 @@ class TeslaViewModel : ViewModel() {
                                 ?: fields.optJSONObject("car_state")?.optString("stringValue") ?: "offline",
                             tpmsFL = getPressure(fields, listOf("tpms_pressure_fl", "tpms_fl")),
                             tpmsFR = getPressure(fields, listOf("tpms_pressure_fr", "tpms_fr")),
-                            tpmsRL = getPressure(fields, listOf("tpms_pressure_rl", "tpms_rl")),
+                            tpmsRL = getPressure(fields, listOf("tpms_rl", "tpms_pressure_rl")),
                             tpmsRR = getPressure(fields, listOf("tpms_pressure_rr", "tpms_rr")),
                             latitude = getNum(fields, listOf("latitude")),
                             longitude = getNum(fields, listOf("longitude"))
@@ -475,6 +486,8 @@ class TeslaViewModel : ViewModel() {
         if (list.isEmpty()) {
             val mockTime = System.currentTimeMillis()
             list.add(VehicleStateData("m1", mockTime, 48.0, 320.0, 22.0, 20.0, 6580.0, "오프라인", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:10 ~ 17:22", durationStr = "11분", computedLabel = "온라인", badgeBg = Color(0xFFA200FF)))
+            list.add(VehicleStateData("m2", mockTime - 600000, 48.0, 320.0, 22.0, 20.0, 6580.0, "driving", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:08 ~ 17:10", durationStr = "2분", computedLabel = "주행", badgeBg = Color(0xFF007AFF)))
+            list.add(VehicleStateData("m3", mockTime - 1200000, 48.0, 320.0, 22.0, 20.0, 6580.0, "online", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:06 ~ 17:08", durationStr = "1분", computedLabel = "온라인", badgeBg = Color(0xFFA200FF)))
         } else {
             list.sortByDescending { it.date }
 
@@ -599,6 +612,12 @@ class TeslaViewModel : ViewModel() {
                 }
             }
         }
+        if (list.isEmpty()) {
+            list.add(BatteryWeeklyData("2026_W01", 420.0, 0.0, 421.0, "1월 1주", 6000.0, 0L, "2026"))
+            list.add(BatteryWeeklyData("2026_W02", 418.0, 0.0, 419.5, "1월 2주", 6200.0, 0L, "2026"))
+            list.add(BatteryWeeklyData("2026_W03", 422.0, 0.0, 423.0, "1월 3주", 6400.0, 0L, "2026"))
+            list.add(BatteryWeeklyData("2026_W04", 421.0, 0.0, 421.8, "1월 4주", 6580.0, 0L, "2026"))
+        }
         batteryData.value = list.sortedBy { it.weekKey }
     }
 }
@@ -679,7 +698,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
             
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
-                    onClick = { vm.fetchAllData(context) },
+                    onClick = { vm.fetchAllData() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(6.dp),
@@ -725,18 +744,12 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (데이터 복사/덤프 브릿지 연동)
+// 4-A. 차량 상태 탭
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
-    val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
-    
     val states by vm.vehicleStates.collectAsState()
     val trip by vm.tripInfo.collectAsState()
-    val rawState by vm.rawJsonState.collectAsState()
-    val rawDriving by vm.rawJsonDriving.collectAsState()
-    
     val latest = states.firstOrNull() ?: return
 
     val sdfFull = remember { SimpleDateFormat("M월 d일 HH:mm", Locale.getDefault()) }
@@ -876,63 +889,12 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                     }
                 }
             }
-
-            // 🛠️ [신규 개발자 패널] 화면 최하단에 스키마 분석용 원본 복사 패널 주입
-            item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp, bottom = 24.dp)
-                        .background(Color(0xFF161622), RoundedCornerShape(14.dp))
-                        .border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp))
-                        .padding(16.dp)
-                ) {
-                    Text("🛠️ 스키마 분석용 텍스트 덤프 엔진", color = Color(0xFFFCA311), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("갱신 시 파일이 내부 스토리지에 자동 저장됩니다. 아래 버튼을 눌러 원본 JSON을 클립보드에 복사해 GitHub나 Termux 문서로 전환하세요.", color = Color.Gray, fontSize = 11.sp)
-                    Spacer(modifier = Modifier.height(14.dp))
-                    
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                if (rawState.isNotBlank()) {
-                                    clipboardManager.setText(AnnotatedString(rawState))
-                                    android.widget.Toast.makeText(context, "차량 상태 JSON이 복사되었습니다!", android.widget.Toast.LENGTH_SHORT).show()
-                                } else {
-                                    android.widget.Toast.makeText(context, "복사할 데이터가 없습니다. 상단 [갱신]을 먼저 누르세요.", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("상태 JSON 복사", color = Color.White, fontSize = 12.sp)
-                        }
-
-                        Button(
-                            onClick = {
-                                if (rawDriving.isNotBlank()) {
-                                    clipboardManager.setText(AnnotatedString(rawDriving))
-                                    android.widget.Toast.makeText(context, "주행 로그 JSON이 복사되었습니다!", android.widget.Toast.LENGTH_SHORT).show()
-                                } else {
-                                    android.widget.Toast.makeText(context, "복사할 데이터가 없습니다. 상단 [갱신]을 먼저 누르세요.", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("주행 JSON 복사", color = Color.White, fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
         }
     }
 }
 
 // ==========================================
-// 4-B. 주행 정보 탭
+// 4-B. 주행 정보 탭 (지도시각화 최적화 튜닝 완료)
 // ==========================================
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
@@ -944,10 +906,11 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
             if (combinedPoints.isNotEmpty()) {
                 GoogleMap(
                     modifier = Modifier.fillMaxSize(),
-                    cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(combinedPoints.last(), 12f) }
+                    cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(combinedPoints.last(), 14f) }
                 ) {
                     TileOverlay(tileProvider = UrlTileProvider(256, 256) { x, y, z -> URL("https://tile.openstreetmap.fr/hot/$z/$x/$y.png") })
-                    Polyline(points = combinedPoints, color = Color(0xFF2685FF), width = 10f)
+                    // 🛠️ [조절] location_list에서 파싱해 낸 촘촘한 세션 동선 궤적 데이터를 지도 위에 오버레이 드로잉
+                    Polyline(points = combinedPoints, color = Color(0xFF2685FF), width = 12f)
                 }
             } else {
                 Text("GPS 수집 세션 동선 복원 중...", color = Color.Gray, fontSize = 12.sp)
@@ -963,7 +926,14 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
                     Column {
                         val sdf = SimpleDateFormat("MM월 dd일 HH:mm", Locale.getDefault())
                         Text(sdf.format(Date(log.date)), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("평균 전비: ${log.efficiency} km/kWh", color = Color(0xFF34C759), fontSize = 11.sp)
+                        
+                        // 🛠️ [조절] 수집된 소요 시간(Time)과 자동 계산된 실시간 연산 전비를 서브텍스트로 출력
+                        val specSubText = if (log.durationStr.isNotEmpty()) {
+                            "시간: ${log.durationStr} | 평균 전비: ${log.efficiency} km/kWh"
+                        } else {
+                            "평균 전비: ${log.efficiency} km/kWh"
+                        }
+                        Text(specSubText, color = Color(0xFF34C759), fontSize = 11.sp)
                     }
                     Text("+${log.drivingKM} km", color = Color(0xFFFCA311), fontWeight = FontWeight.Black, fontSize = 15.sp)
                 }
