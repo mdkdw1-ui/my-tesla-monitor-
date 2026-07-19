@@ -394,7 +394,6 @@ class TeslaViewModel : ViewModel() {
                     if (p == null) null else if (p < 7.0) String.format(Locale.US, "%.1f", p * 14.5038).toDouble() else String.format(Locale.US, "%.1f", p).toDouble()
                 }
 
-                // 🛠️ [해결 1] 문서의 최상단 필드(가장 최신의 실시간 주행 데이터)를 먼저 무조건 추출하여 리스트에 삽입합니다.
                 val topState = VehicleStateData(
                     id = docId, date = topDate,
                     batteryLevel = getNum(topFields, listOf("battery_level", "batteryLevel", "battery_percent")),
@@ -413,7 +412,6 @@ class TeslaViewModel : ViewModel() {
                 )
                 list.add(topState)
 
-                // 🛠️ [해결 2] 독점 조건문을 해제하고 하위 과거 로그 이력(stateLogs)이 존재한다면 겹치지 않는 선에서 추가 병합합니다.
                 val logsArray = topFields.optJSONObject("stateLogs")?.optJSONObject("arrayValue")?.optJSONArray("values")
                 if (logsArray != null && logsArray.length() > 0) {
                     for (j in 0 until logsArray.length()) {
@@ -422,7 +420,7 @@ class TeslaViewModel : ViewModel() {
                         val logDate = fields.optJSONObject("endDateTime")?.optString("integerValue")?.toLongOrNull() 
                             ?: fields.optJSONObject("date")?.optString("integerValue")?.toLongOrNull() ?: topDate
 
-                        if (logDate == topDate) continue // 완전히 중복되는 타임스탬프 스킵
+                        if (logDate == topDate) continue
 
                         list.add(VehicleStateData(
                             id = docId, date = logDate,
@@ -455,7 +453,6 @@ class TeslaViewModel : ViewModel() {
         } else {
             list.sortByDescending { it.date }
 
-            // 🛠️ [해결 3] 델타 계산 전에 기본 raw 상태를 한글 라벨로 직관적으로 초기 매핑해 줍니다.
             list.forEach { item ->
                 when (item.carState.lowercase()) {
                     "driving" -> { item.computedLabel = "주행"; item.badgeBg = Color(0xFF007AFF) }
@@ -709,7 +706,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (다이내믹 실시간 바인딩 처리 완료)
+// 4-A. 차량 상태 탭 (날짜별 묶음 그룹화 빌드 완료)
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
@@ -726,7 +723,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // 🛠️ [해결 4] 현재 상태 서브 헤더 라벨과 도트 컬러를 영문이 아닌 최신 실시간 한글 계산값으로 변환
                 Box(modifier = Modifier.size(8.dp).background(latest.badgeBg, RoundedCornerShape(4.dp)))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("현재: ${latest.computedLabel}", color = Color.White, fontSize = 13.sp)
@@ -769,7 +765,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
             }
 
             item {
-                // 🛠️ [해결 5] 하드코딩된 주차 카드를 실시간 매핑 상태에 따라 다이내믹하게 바뀌도록 수정
                 val cardTitle = when (latest.computedLabel) {
                     "주행" -> "차량 주행 중 🚗"
                     "충전" -> "배터리 충전 중 ⚡"
@@ -797,7 +792,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF252538), RoundedCornerShape(14.dp)).padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("⚙️ 타이어 공기압", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        // 🛠️ [해결 6] 타이어 헤더 시간 및 외기 온도 하드코딩 제거 및 실시간 연동
                         Text("${sdfFull.format(Date(latest.date))} | 🌡️ ${latest.outsideTemp ?: 27.0}°C", color = Color.Gray, fontSize = 11.sp)
                     }
                     Spacer(modifier = Modifier.height(12.dp))
@@ -814,36 +808,46 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 }
             }
 
-            item {
-                // 🛠️ [해결 7] 하드코딩된 로그 텍스트 헤더 날짜 유연화
-                Text("${sdfDateOnly.format(Date(latest.date))} 변동 로그", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-            }
+            // 🛠️ [해결] 로그 목록을 실시간 날짜별로 그루핑(groupBy)하여 멀티 헤더 출력 엔진 구축
+            val filteredLogs = states.filter { it.batteryDelta != 0.0 || it.distanceDelta != 0.0 }
+            val groupedLogs = filteredLogs.groupBy { sdfDateOnly.format(Date(it.date)) }
 
-            items(states.filter { it.batteryDelta != 0.0 || it.distanceDelta != 0.0 }) { log ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(12.dp)).padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(log.computedLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                                modifier = Modifier.background(log.badgeBg, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("${log.timeRangeStr} (${log.durationStr})", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("🔋 ${log.batteryLevel?.toInt() ?: 48}%", color = Color.LightGray, fontSize = 12.sp)
-                            val bSign = if (log.batteryDelta >= 0) "▲" else "▼"
-                            Text("$bSign ${String.format(Locale.US, "%.1f", Math.abs(log.batteryDelta))}%", color = if(log.batteryDelta>=0) Color(0xFF34C759) else Color(0xFFFF3B30), fontSize = 12.sp)
-                            
-                            if (log.distanceDelta > 0.0) {
-                                Text("🚗 +${String.format(Locale.US, "%.1f", log.distanceDelta)} km", color = Color(0xFF2685FF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            groupedLogs.forEach { (dateStr, logsForDate) ->
+                item {
+                    Text(
+                        text = "$dateStr 변동 로그",
+                        color = Color.Gray,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                    )
+                }
+
+                items(logsForDate) { log ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(12.dp)).padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(log.computedLabel, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.background(log.badgeBg, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("${log.timeRangeStr} (${log.durationStr})", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             }
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Text("🔋 ${log.batteryLevel?.toInt() ?: 48}%", color = Color.LightGray, fontSize = 12.sp)
+                                val bSign = if (log.batteryDelta >= 0) "▲" else "▼"
+                                Text("$bSign ${String.format(Locale.US, "%.1f", Math.abs(log.batteryDelta))}%", color = if(log.batteryDelta>=0) Color(0xFF34C759) else Color(0xFFFF3B30), fontSize = 12.sp)
+                                
+                                if (log.distanceDelta > 0.0) {
+                                    Text("🚗 +${String.format(Locale.US, "%.1f", log.distanceDelta)} km", color = Color(0xFF2685FF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
 
-                            Text("📍 ${log.odometer?.toInt() ?: 6580} km", color = Color.Gray, fontSize = 12.sp)
+                                Text("📍 ${log.odometer?.toInt() ?: 6580} km", color = Color.Gray, fontSize = 12.sp)
+                            }
                         }
                     }
                 }
