@@ -217,7 +217,7 @@ class TeslaViewModel : ViewModel() {
                 .sortedBy { it.first }
                 .map { it.second }
         } catch (e: Exception) {
-            errorMsg.value = "[동선 계산 오류]\n${e.localizedMessage}\n${e.stackTrace.take(2).joinToString("\n")}"
+            errorMsg.value = "[동선 계산 및 결합 오류]\n${e.localizedMessage}\n${e.stackTrace.take(2).joinToString("\n")}"
         }
     }
 
@@ -291,7 +291,7 @@ class TeslaViewModel : ViewModel() {
                 fetchMonthlyReport(accessToken)
                 fetchBatteryTrend(idToken)
             } catch (e: Exception) {
-                errorMsg.value = "[네트워크 인입 오류]\n${e.localizedMessage}\n${e.stackTrace.take(3).joinToString("\n")}"
+                errorMsg.value = "[원격 저장소 동기화 실패]\n${e.localizedMessage}\n${e.stackTrace.take(3).joinToString("\n")}"
                 e.printStackTrace()
             } finally {
                 isLoading.value = false
@@ -307,7 +307,7 @@ class TeslaViewModel : ViewModel() {
         client.newCall(req).execute().use { res ->
             val json = JSONObject(res.body?.string() ?: "")
             if (json.has("error")) {
-                throw Exception("Google Secure Token 인증 실패: ${json.optJSONObject("error")?.optString("message") ?: "Unknown"}")
+                throw Exception("Google 인증 세션 만료: ${json.optJSONObject("error")?.optString("message") ?: "Unknown"}")
             }
             return Pair(json.getString("access_token"), json.getString("id_token"))
         }
@@ -338,7 +338,7 @@ class TeslaViewModel : ViewModel() {
         val req = Request.Builder().url(url).addHeader("Authorization", "Bearer $token").post(bodyStr.toRequestBody(mediaType)).build()
         client.newCall(req).execute().use { 
             val rawBody = it.body?.string() ?: ""
-            if (!it.isSuccessful) throw Exception("HTTP ${it.code}: $rawBody")
+            if (!it.isSuccessful) throw Exception("서버 응답 오류 (HTTP ${it.code}): $rawBody")
             return rawBody
         }
     }
@@ -401,7 +401,7 @@ class TeslaViewModel : ViewModel() {
                 ))
             }
         } catch (e: Exception) {
-            errorMsg.value = "[주행 로그 파싱 예외]\n${e.localizedMessage}\n${e.stackTrace.take(3).joinToString("\n")}"
+            errorMsg.value = "[주행 히스토리 파싱 오류]\n${e.localizedMessage}"
             e.printStackTrace()
         }
         if (list.isNotEmpty()) {
@@ -488,14 +488,14 @@ class TeslaViewModel : ViewModel() {
                 }
             }
         } catch (e: Exception) {
-            errorMsg.value = "[상태 로그 파싱 예외]\n${e.localizedMessage}"
+            errorMsg.value = "[차량 상태 데이터 분석 오류]\n${e.localizedMessage}"
             e.printStackTrace()
         }
 
         if (list.isNotEmpty()) {
             list.sortByDescending { it.date }
 
-            // 🛠️ 1차 상태 태깅 고도화 (충전 세션 감지 포함)
+            // 1차 상태 기저 태깅 (원시 상태값 매핑)
             list.forEach { item ->
                 when (item.carState.lowercase()) {
                     "driving" -> { item.computedLabel = "주행"; item.badgeBg = Color(0xFF007AFF) }
@@ -505,7 +505,7 @@ class TeslaViewModel : ViewModel() {
                 }
             }
 
-            // 🛠️ 2차 구간 변동 분석 (충전 상태 확정 및 주차 시간 누적 매핑)
+            // 2차 차분 연산을 통한 정밀 식별 연동 (충전 전력 인입 및 주차 대기 시간)
             for (idx in 0 until list.size - 1) {
                 val current = list[idx]
                 val previous = list[idx + 1]
@@ -518,7 +518,7 @@ class TeslaViewModel : ViewModel() {
                     val diffMins = ((current.date - previous.date) / 60000).toInt()
                     current.durationStr = if (diffMins >= 60) "${diffMins/60}시간 ${diffMins%60}분" else "${diffMins}분"
 
-                    // 차량 정보 연동 판별: 배터리가 차오르거나(충전중) 원본 API 상태가 충전일 때 완전히 충전 상태로 귀속
+                    // 충전 조건식 고도화: 배터리 잔량이 증가했거나 API 상태 코드가 충전 중인 경우 귀속
                     if (current.carState.lowercase() == "charging" || current.batteryDelta > 0.0) {
                         current.computedLabel = "충전"
                         current.badgeBg = Color(0xFF34C759)
@@ -680,7 +680,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Tesla Console Monitor", color = Color.Gray, fontSize = 14.sp)
+            Text("Tesla Monitor Console", color = Color.Gray, fontSize = 14.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
                     onClick = { vm.fetchAllData() },
@@ -697,7 +697,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
             }
         }
 
-        // ⚠️ [디버그 빌드 플러그인] 화면 표출 에러 코드 판넬 구성
+        // 🛡️ [컴파일 버그 수정 완료] 시스템 장애 및 스택 트레이스 디버깅 판넬
         if (errorMsg != null) {
             Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).background(Color(0xFF2C1414), RoundedCornerShape(10.dp)).border(1.dp, Color.Red, RoundedCornerShape(10.dp)).padding(12.dp)
@@ -707,7 +707,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
                     Text("Clear", color = Color.White, fontSize = 11.sp, modifier = Modifier.background(Color.Gray.copy(alpha = 0.4f), RoundedCornerShape(4.dp)).clickable { vm.errorMsg.value = null }.padding(horizontal = 6.dp, vertical = 2.dp))
                 }
                 Spacer(modifier = Modifier.height(6.dp))
-                Box(modifier = Modifier.fillMaxWidth().maxHeight(120.dp).verticalScroll(rememberScrollState())) {
+                Box(modifier = Modifier.fillMaxWidth().heightIn(max = 120.dp).verticalScroll(rememberScrollState())) {
                     Text(errorMsg!!, color = Color(0xFFFFCCCC), fontSize = 11.sp)
                 }
             }
@@ -722,7 +722,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
                 val selected = activeTab == tab
                 Tab(
                     selected = selected, onClick = { vm.activeTab.value = tab },
-                    text = { Text(when(tab) { TabType.STATUS -> "상태"; TabType.DRIVING -> "주행정보"; TabType.MONTHLY -> "월간 내역"; TabType.BATTERY -> "배터리" }, color = if (selected) Modifier.background(Color(0xFFFCA311), RoundedCornerShape(10.dp)); Color(0xFF0F0F12) else Color(0xFFA0A0B2), fontWeight = FontWeight.Bold, fontSize = 12.sp) },
+                    text = { Text(when(tab) { TabType.STATUS -> "상태"; TabType.DRIVING -> "주행정보"; TabType.MONTHLY -> "월간 내역"; TabType.BATTERY -> "배터리" }, color = if (selected) Color(0xFF0F0F12) else Color(0xFFA0A0B2), fontWeight = FontWeight.Bold, fontSize = 12.sp) },
                     modifier = if (selected) Modifier.background(Color(0xFFFCA311), RoundedCornerShape(10.dp)) else Modifier
                 )
             }
@@ -740,7 +740,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (주차시간 및 충전 연동 반영)
+// 4-A. 차량 상태 탭 (충전 인입 연동 및 주차 세션 타임라인 반영)
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
@@ -759,7 +759,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.size(8.dp).background(latest.badgeBg, RoundedCornerShape(4.dp)))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("차량 상태: ${latest.computedLabel}", color = Color.White, fontSize = 13.sp)
+                Text("현재: ${latest.computedLabel}", color = Color.White, fontSize = 13.sp)
             }
             Text("🔋 ${latest.batteryLevel?.toInt() ?: 0}%", color = Color.White, fontSize = 13.sp)
             Text("📍 ${latest.odometer?.toInt() ?: 0} km", color = Color.White, fontSize = 13.sp)
@@ -791,7 +791,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 }
             }
 
-            val filteredLogs = states.filter { it.batteryDelta != 0.0 || it.distanceDelta != 0.0 || it.computedLabel == "주차" }
+            val filteredLogs = states.filter { it.batteryDelta != 0.0 || it.distanceDelta > 0.0 || it.computedLabel == "주차" }
             val groupedLogs = filteredLogs.groupBy { sdfDateOnly.format(Date(it.date)) }
 
             groupedLogs.forEach { (dateStr, logsForDate) ->
@@ -807,7 +807,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                                     modifier = Modifier.background(log.badgeBg, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                // 🛠️ 주행시간 / 충전시간 / 주차시간 분기 자동 출력 반영
                                 val timeTitle = when(log.computedLabel) {
                                     "주행" -> "주행 시간"
                                     "충전" -> "충전 시간"
@@ -819,10 +818,9 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                                 Text("🔋 잔량: ${log.batteryLevel?.toInt() ?: 0}%", color = Color.LightGray, fontSize = 12.sp)
                                 
-                                // 🛠️ 충전 시 배터리 상승폭 표현 고도화
                                 val bDelta = log.batteryDelta
                                 if (bDelta > 0.0) {
-                                    Text("▲ +${String.format(Locale.US, "%.1f", bDelta)}% [충전됨]", color = Color(0xFF34C759), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text("▲ +${String.format(Locale.US, "%.1f", bDelta)}% [충전 완료]", color = Color(0xFF34C759), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 } else if (bDelta < 0.0) {
                                     Text("▼ ${String.format(Locale.US, "%.1f", Math.abs(bDelta))}%", color = Color(0xFFFF3B30), fontSize = 12.sp)
                                 }
@@ -840,7 +838,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-B. 주행 정보 탭 (에러 캡처 플러그인 장착)
+// 4-B. 주행 정보 탭 (런타임 컴포저블 크래시 구조 개선)
 // ==========================================
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
@@ -852,25 +850,22 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
             modifier = Modifier.fillMaxWidth().height(260.dp).background(Color(0xFF13131C), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp)), 
             contentAlignment = Alignment.Center
         ) {
-            // 🛠️ 지도 컴포넌트 런타임 크래시 방어용 Catch 컨테이너 장착
-            try {
-                if (combinedPoints.isNotEmpty()) {
+            // [컴파일 규격 준수] Composable 주위의 비정상 try-catch 제거 후 안전 맵 포지셔닝 래핑 완료
+            if (combinedPoints.isNotEmpty()) {
+                val lastPoint = combinedPoints.lastOrNull()
+                if (lastPoint != null) {
                     GoogleMap(
                         modifier = Modifier.fillMaxSize(),
-                        cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(combinedPoints.last(), 14f) }
+                        cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(lastPoint, 14f) }
                     ) {
                         TileOverlay(tileProvider = UrlTileProvider(256, 256) { x, y, z -> URL("https://tile.openstreetmap.fr/hot/$z/$x/$y.png") })
                         Polyline(points = combinedPoints, color = Color(0xFF2685FF), width = 12f)
                     }
                 } else {
-                    Text("수집된 GPS 동선이 없거나 맵을 초기화하는 중입니다.", color = Color.Gray, fontSize = 12.sp)
+                    Text("유효 궤적을 연산하는 중입니다.", color = Color.Gray, fontSize = 12.sp)
                 }
-            } catch (e: Exception) {
-                // 구글맵 렌더링 도중 튀는 예외를 가로채 상단 디버그 창에 바인딩
-                LaunchedEffect(e) {
-                    vm.errorMsg.value = "[구글 맵 컴포즈 예외]\n${e.localizedMessage}\n${e.stackTraceToString()}"
-                }
-                Text("지도 컴포넌트 오류 발생\n상단 빨간색 에러 로그 필드를 확인하세요.", color = Color.Red, fontSize = 12.sp, textAlign = TextAlign.Center)
+            } else {
+                Text("수집된 GPS 동선이 없거나 맵 로딩 상태를 연동 중입니다.", color = Color.Gray, fontSize = 12.sp)
             }
         }
         
