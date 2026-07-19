@@ -148,7 +148,7 @@ object EncryptEngine {
 }
 
 // ==========================================
-// 3. VIEWMODEL LAYER (통합 데이터 가공 인프라)
+// 3. VIEWMODEL LAYER
 // ==========================================
 class TeslaViewModel : ViewModel() {
     private val VEHICLE_ID = "3744141651867089"
@@ -170,11 +170,11 @@ class TeslaViewModel : ViewModel() {
     val batteryData = MutableStateFlow<List<BatteryWeeklyData>>(emptyList())
     val tripInfo = MutableStateFlow(TripSummary())
 
-    // 🌟 [추가] 두 소스(상태 로그 + 주행 로그)의 GPS를 시간순으로 정렬한 통합 궤적 데이터 스트림
+    // 두 소스(상태 로그 + 주행 로그)의 GPS를 시간순으로 정렬한 통합 궤적 데이터 스트림
     private val _combinedDrivingPoints = MutableStateFlow<List<LatLng>>(emptyList())
     val combinedDrivingPoints: StateFlow<List<LatLng>> = _combinedDrivingPoints
 
-    // 🌟 [추가] 월간 내역 탭의 기간 검색 조건을 위한 상단 드롭다운 바인딩 상태 변수
+    // 월간 내역 탭의 기간 검색 조건을 위한 상단 드롭다운 바인딩 상태 변수
     val startYear = MutableStateFlow("2025")
     val startMonth = MutableStateFlow("01")
     val endYear = MutableStateFlow("2026")
@@ -195,7 +195,7 @@ class TeslaViewModel : ViewModel() {
         updateCombinedDrivingPoints()
     }
 
-    // 🌟 [추가] 양쪽 소스(vehicleStates, drivingLogs)의 유효 GPS 데이터를 시간순 정렬하여 경로 복원
+    // 양쪽 소스의 유효 GPS 데이터를 시간순 정렬하여 경로 복원
     private fun updateCombinedDrivingPoints() {
         val statePoints = vehicleStates.value
             .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 }
@@ -455,7 +455,7 @@ class TeslaViewModel : ViewModel() {
                     val diffMins = ((current.date - previous.date) / 60000).toInt()
                     current.durationStr = if (diffMins >= 60) "${diffMins/60}시간 ${diffMins%60}분" else "${diffMins}분"
 
-                    // 🌟 [요청 스펙 적용] 배터리 소모와 주행거리 증가 동시 감지 시 라벨 고정
+                    // 배터리 소모와 주행거리 증가 동시 감지 시 라벨 고정
                     if (current.batteryDelta < 0.0 && current.distanceDelta > 0.0) {
                         current.computedLabel = "주행"
                         current.badgeBg = Color(0xFF007AFF)
@@ -646,7 +646,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
             Text("Tesla Cam v1.0.14+14", color = Color.Gray, fontSize = 14.sp)
             
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                // 🌟 [요청 스펙 적용] 수동 데이터 새로고침 갱신 버튼 엔진 이식
+                // 수동 데이터 새로고침 갱신 버튼 엔진 이식
                 Button(
                     onClick = { vm.fetchAllData() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
@@ -789,7 +789,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 Text("7월 17일 변동 로그", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
             }
 
-            // 🌟 [요청 스펙 적용] 배터리 변화도 없고 거리 변화도 없는 무의미한 대기 노드는 필터링 후 렌더링 배제
+            // 배터리 변화도 없고 거리 변화도 없는 무의미한 대기 노드는 필터링 후 렌더링 배제
             items(states.filter { it.batteryDelta != 0.0 || it.distanceDelta != 0.0 }) { log ->
                 Row(
                     modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(12.dp)).padding(14.dp),
@@ -810,7 +810,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                             val bSign = if (log.batteryDelta >= 0) "▲" else "▼"
                             Text("$bSign ${String.format(Locale.US, "%.1f", Math.abs(log.batteryDelta))}%", color = if(log.batteryDelta>=0) Color(0xFF34C759) else Color(0xFFFF3B30), fontSize = 12.sp)
                             
-                            // 🌟 [요청 스펙 적용] 주행 거리 증가치 포착 시 블루 스케일 강조 지표 생성
+                            // 주행 거리 증가치 포착 시 블루 스케일 강조 지표 생성
                             if (log.distanceDelta > 0.0) {
                                 Text("🚗 +${String.format(Locale.US, "%.1f", log.distanceDelta)} km", color = Color(0xFF2685FF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
@@ -830,7 +830,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
     val drivingLogs by vm.drivingLogs.collectAsState()
-    val combinedPoints by vm.combinedDrivingPoints.collectAsState() // 🌟 교차 시간순 정렬 처리가 끝난 루트 데이터 사용
+    val combinedPoints by vm.combinedDrivingPoints.collectAsState() // 교차 시간순 정렬 처리가 끝난 루트 데이터 사용
 
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxWidth().height(260.dp).background(Color(0xFF13131C), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
@@ -840,7 +840,7 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
                     cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(combinedPoints.last(), 12f) }
                 ) {
                     TileOverlay(tileProvider = UrlTileProvider(256, 256) { x, y, z -> URL("https://tile.openstreetmap.fr/hot/$z/$x/$y.png") })
-                    // 🌟 교차 검증된 전체 궤적 선형 동선을 블루 스케일로 정밀 렌더링
+                    // 교차 검증된 전체 궤적 선형 동선을 블루 스케일로 정밀 렌더링
                     Polyline(points = combinedPoints, color = Color(0xFF2685FF), width = 10f)
                 }
             } else {
@@ -873,10 +873,11 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
 fun MonthlyReportView(vm: TeslaViewModel) {
     val reports by vm.monthlyData.collectAsState()
     
-    var sYear by vm.startYear.collectAsState()
-    var sMonth by vm.startMonth.collectAsState()
-    var eYear by vm.endYear.collectAsState()
-    var eMonth by vm.endMonth.collectAsState()
+    // 🛠️ [해결] 읽기 전용 State 대리자 컴파일 에러 예방을 위해 var를 val로 완벽 교정 완료
+    val sYear by vm.startYear.collectAsState()
+    val sMonth by vm.startMonth.collectAsState()
+    val eYear by vm.endYear.collectAsState()
+    val eMonth by vm.endMonth.collectAsState()
     
     val yearOptions = listOf("2025", "2026")
     val monthOptions = (1..12).map { "%02d".format(it) }
@@ -885,7 +886,7 @@ fun MonthlyReportView(vm: TeslaViewModel) {
     val endFilterKey = "$eYear-$eMonth"
     val filteredReports = reports.filter { it.monthKey >= startFilterKey && it.monthKey <= endFilterKey }
 
-    // 🌟 [요청 스펙 적용] 선택한 이원화 범위 데이터 다차원 애그리게이션 연산
+    // 선택한 이원화 범위 데이터 다차원 애그리게이션 연산
     val totalRangeDistance = filteredReports.sumOf { it.totalDistance }
     val totalRangeDrivingKM = filteredReports.sumOf { it.drivingKM }
     val totalRangeChargeKwh = filteredReports.sumOf { (it.chargingPercent / 100.0) * 62.1 * it.factor }
@@ -925,7 +926,7 @@ fun MonthlyReportView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 🌟 [요청 스펙 적용] 선택 영역의 다차원 누적 수치를 계측하여 종합 요약해주는 독립 마스터 카드 패널
+        // 선택 영역의 다차원 누적 수치를 계측하여 종합 요약해주는 독립 마스터 카드 패널
         Column(
             modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2A2A3F), RoundedCornerShape(14.dp)).padding(16.dp)
         ) {
