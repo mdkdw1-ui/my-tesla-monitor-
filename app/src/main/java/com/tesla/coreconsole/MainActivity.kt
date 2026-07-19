@@ -170,11 +170,9 @@ class TeslaViewModel : ViewModel() {
     val batteryData = MutableStateFlow<List<BatteryWeeklyData>>(emptyList())
     val tripInfo = MutableStateFlow(TripSummary())
 
-    // 두 소스(상태 로그 + 주행 로그)의 GPS를 시간순으로 정렬한 통합 궤적 데이터 스트림
     private val _combinedDrivingPoints = MutableStateFlow<List<LatLng>>(emptyList())
     val combinedDrivingPoints: StateFlow<List<LatLng>> = _combinedDrivingPoints
 
-    // 월간 내역 탭의 기간 검색 조건을 위한 상단 드롭다운 바인딩 상태 변수
     val startYear = MutableStateFlow("2025")
     val startMonth = MutableStateFlow("01")
     val endYear = MutableStateFlow("2026")
@@ -195,7 +193,6 @@ class TeslaViewModel : ViewModel() {
         updateCombinedDrivingPoints()
     }
 
-    // 양쪽 소스의 유효 GPS 데이터를 시간순 정렬하여 경로 복원
     private fun updateCombinedDrivingPoints() {
         val statePoints = vehicleStates.value
             .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 }
@@ -397,37 +394,53 @@ class TeslaViewModel : ViewModel() {
                     if (p == null) null else if (p < 7.0) String.format(Locale.US, "%.1f", p * 14.5038).toDouble() else String.format(Locale.US, "%.1f", p).toDouble()
                 }
 
+                // 🛠️ [해결 1] 문서의 최상단 필드(가장 최신의 실시간 주행 데이터)를 먼저 무조건 추출하여 리스트에 삽입합니다.
+                val topState = VehicleStateData(
+                    id = docId, date = topDate,
+                    batteryLevel = getNum(topFields, listOf("battery_level", "batteryLevel", "battery_percent")),
+                    batteryRange = getNum(topFields, listOf("battery_range", "batteryRange")),
+                    insideTemp = getNum(topFields, listOf("inside_temp", "insideTemp")),
+                    outsideTemp = getNum(topFields, listOf("outside_temp", "outsideTemp")),
+                    odometer = getNum(topFields, listOf("odometer", "Odometer")),
+                    carState = topFields.optJSONObject("car_state")?.optString("stringValue") 
+                        ?: topFields.optJSONObject("state")?.optString("stringValue") ?: "offline",
+                    tpmsFL = getPressure(topFields, listOf("tpms_fl", "tpms_pressure_fl")),
+                    tpmsFR = getPressure(topFields, listOf("tpms_fr", "tpms_pressure_fr")),
+                    tpmsRL = getPressure(topFields, listOf("tpms_rl", "tpms_pressure_rl")),
+                    tpmsRR = getPressure(topFields, listOf("tpms_rr", "tpms_pressure_rr")),
+                    latitude = getNum(topFields, listOf("latitude")),
+                    longitude = getNum(topFields, listOf("longitude"))
+                )
+                list.add(topState)
+
+                // 🛠️ [해결 2] 독점 조건문을 해제하고 하위 과거 로그 이력(stateLogs)이 존재한다면 겹치지 않는 선에서 추가 병합합니다.
                 val logsArray = topFields.optJSONObject("stateLogs")?.optJSONObject("arrayValue")?.optJSONArray("values")
                 if (logsArray != null && logsArray.length() > 0) {
                     for (j in 0 until logsArray.length()) {
                         val logItem = logsArray.getJSONObject(j)
                         val fields = logItem.optJSONObject("mapValue")?.optJSONObject("fields") ?: continue
-                        val logDate = fields.optJSONObject("endDateTime")?.optString("integerValue")?.toLongOrNull() ?: topDate
+                        val logDate = fields.optJSONObject("endDateTime")?.optString("integerValue")?.toLongOrNull() 
+                            ?: fields.optJSONObject("date")?.optString("integerValue")?.toLongOrNull() ?: topDate
+
+                        if (logDate == topDate) continue // 완전히 중복되는 타임스탬프 스킵
 
                         list.add(VehicleStateData(
                             id = docId, date = logDate,
                             batteryLevel = getNum(fields, listOf("battery_level", "batteryLevel", "battery_percent")),
                             batteryRange = getNum(fields, listOf("battery_range", "batteryRange")),
+                            insideTemp = getNum(fields, listOf("inside_temp", "insideTemp")),
+                            outsideTemp = getNum(fields, listOf("outside_temp", "outsideTemp")),
                             odometer = getNum(fields, listOf("odometer", "Odometer")),
-                            carState = fields.optJSONObject("state")?.optString("stringValue") ?: "offline",
+                            carState = fields.optJSONObject("state")?.optString("stringValue") 
+                                ?: fields.optJSONObject("car_state")?.optString("stringValue") ?: "offline",
                             tpmsFL = getPressure(fields, listOf("tpms_pressure_fl", "tpms_fl")),
                             tpmsFR = getPressure(fields, listOf("tpms_pressure_fr", "tpms_fr")),
                             tpmsRL = getPressure(fields, listOf("tpms_pressure_rl", "tpms_rl")),
-                            tpmsRR = getPressure(fields, listOf("tpms_pressure_rr", "tpms_rr"))
+                            tpmsRR = getPressure(fields, listOf("tpms_pressure_rr", "tpms_rr")),
+                            latitude = getNum(fields, listOf("latitude")),
+                            longitude = getNum(fields, listOf("longitude"))
                         ))
                     }
-                } else {
-                    list.add(VehicleStateData(
-                        id = docId, date = topDate,
-                        batteryLevel = getNum(topFields, listOf("battery_level", "batteryLevel")),
-                        batteryRange = getNum(topFields, listOf("battery_range")),
-                        odometer = getNum(topFields, listOf("odometer")),
-                        carState = topFields.optJSONObject("car_state")?.optString("stringValue") ?: "offline",
-                        tpmsFL = getPressure(topFields, listOf("tpms_fl")),
-                        tpmsFR = getPressure(topFields, listOf("tpms_fr")),
-                        tpmsRL = getPressure(topFields, listOf("tpms_rl")),
-                        tpmsRR = getPressure(topFields, listOf("tpms_rr"))
-                    ))
                 }
             }
         } catch (e: Exception) {
@@ -439,10 +452,20 @@ class TeslaViewModel : ViewModel() {
             list.add(VehicleStateData("m1", mockTime, 48.0, 320.0, 22.0, 20.0, 6580.0, "오프라인", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:10 ~ 17:22", durationStr = "11분", computedLabel = "온라인", badgeBg = Color(0xFFA200FF)))
             list.add(VehicleStateData("m2", mockTime - 600000, 48.0, 320.0, 22.0, 20.0, 6580.0, "driving", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:08 ~ 17:10", durationStr = "2분", computedLabel = "주행", badgeBg = Color(0xFF007AFF)))
             list.add(VehicleStateData("m3", mockTime - 1200000, 48.0, 320.0, 22.0, 20.0, 6580.0, "online", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:06 ~ 17:08", durationStr = "1분", computedLabel = "온라인", badgeBg = Color(0xFFA200FF)))
-            list.add(VehicleStateData("m4", mockTime - 10800000, 48.0, 320.0, 22.0, 20.0, 6580.0, "charging", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, batteryDelta = 29.0, timeRangeStr = "14:16 ~ 17:06", durationStr = "2시간 50분", computedLabel = "충전", badgeBg = Color(0xFF34C759)))
-            list.add(VehicleStateData("m5", mockTime - 20000000, 19.0, 120.0, 22.0, 20.0, 6580.0, "driving", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, batteryDelta = -10.0, timeRangeStr = "12:17 ~ 14:15", durationStr = "1시간 58분", computedLabel = "주행", badgeBg = Color(0xFF007AFF)))
         } else {
             list.sortByDescending { it.date }
+
+            // 🛠️ [해결 3] 델타 계산 전에 기본 raw 상태를 한글 라벨로 직관적으로 초기 매핑해 줍니다.
+            list.forEach { item ->
+                when (item.carState.lowercase()) {
+                    "driving" -> { item.computedLabel = "주행"; item.badgeBg = Color(0xFF007AFF) }
+                    "charging" -> { item.computedLabel = "충전"; item.badgeBg = Color(0xFF34C759) }
+                    "online" -> { item.computedLabel = "온라인"; item.badgeBg = Color(0xFFA200FF) }
+                    "offline" -> { item.computedLabel = "오프라인"; item.badgeBg = Color.Gray }
+                    else -> { item.computedLabel = "온라인"; item.badgeBg = Color(0xFFA200FF) }
+                }
+            }
+
             for (idx in 0 until list.size - 1) {
                 val current = list[idx]
                 val previous = list[idx + 1]
@@ -455,16 +478,9 @@ class TeslaViewModel : ViewModel() {
                     val diffMins = ((current.date - previous.date) / 60000).toInt()
                     current.durationStr = if (diffMins >= 60) "${diffMins/60}시간 ${diffMins%60}분" else "${diffMins}분"
 
-                    // 배터리 소모와 주행거리 증가 동시 감지 시 라벨 고정
                     if (current.batteryDelta < 0.0 && current.distanceDelta > 0.0) {
                         current.computedLabel = "주행"
                         current.badgeBg = Color(0xFF007AFF)
-                    } else {
-                        when (current.carState.lowercase()) {
-                            "driving" -> { current.computedLabel = "주행"; current.badgeBg = Color(0xFF007AFF) }
-                            "charging" -> { current.computedLabel = "충전"; current.badgeBg = Color(0xFF34C759) }
-                            else -> { current.computedLabel = "온라인"; current.badgeBg = Color(0xFFA200FF) }
-                        }
                     }
                 }
             }
@@ -646,7 +662,6 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
             Text("Tesla Cam v1.0.14+14", color = Color.Gray, fontSize = 14.sp)
             
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                // 수동 데이터 새로고침 갱신 버튼 엔진 이식
                 Button(
                     onClick = { vm.fetchAllData() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
@@ -694,7 +709,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (변동 없는 무의미 필터 차단 스펙 구현)
+// 4-A. 차량 상태 탭 (다이내믹 실시간 바인딩 처리 완료)
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
@@ -702,18 +717,22 @@ fun StatusDashboardView(vm: TeslaViewModel) {
     val trip by vm.tripInfo.collectAsState()
     val latest = states.firstOrNull() ?: return
 
+    val sdfFull = remember { SimpleDateFormat("M월 d일 HH:mm", Locale.getDefault()) }
+    val sdfDateOnly = remember { SimpleDateFormat("M월 d일", Locale.getDefault()) }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(8.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(8.dp).background(Color.Gray, RoundedCornerShape(4.dp)))
+                // 🛠️ [해결 4] 현재 상태 서브 헤더 라벨과 도트 컬러를 영문이 아닌 최신 실시간 한글 계산값으로 변환
+                Box(modifier = Modifier.size(8.dp).background(latest.badgeBg, RoundedCornerShape(4.dp)))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("현재: ${latest.carState}", color = Color.White, fontSize = 13.sp)
+                Text("현재: ${latest.computedLabel}", color = Color.White, fontSize = 13.sp)
             }
-            Text("🔋 ${latest.batteryLevel?.toInt() ?: 48}%", color = Color.White, fontSize = 13.sp)
-            Text("📍 ${latest.odometer?.toInt() ?: 6580} km", color = Color.White, fontSize = 13.sp)
+            Text("🔋 ${latest.batteryLevel?.toInt() ?: 45}%", color = Color.White, fontSize = 13.sp)
+            Text("📍 ${latest.odometer?.toInt() ?: 6589} km", color = Color.White, fontSize = 13.sp)
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -750,17 +769,26 @@ fun StatusDashboardView(vm: TeslaViewModel) {
             }
 
             item {
+                // 🛠️ [해결 5] 하드코딩된 주차 카드를 실시간 매핑 상태에 따라 다이내믹하게 바뀌도록 수정
+                val cardTitle = when (latest.computedLabel) {
+                    "주행" -> "차량 주행 중 🚗"
+                    "충전" -> "배터리 충전 중 ⚡"
+                    "오프라인" -> "차량 연결 해제 (오프라인) 💤"
+                    else -> "차량 주차/대기 중 🅿️"
+                }
+                val cardSubtitle = "${sdfFull.format(Date(latest.date))} 기준 상태 업데이트 완료"
+
                 Row(
                     modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1408), RoundedCornerShape(12.dp)).border(1.dp, Color(0xFFFCA311), RoundedCornerShape(12.dp)).padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(modifier = Modifier.size(24.dp).background(Color(0xFF007AFF), RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
-                        Text("P", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Box(modifier = Modifier.size(24.dp).background(latest.badgeBg, RoundedCornerShape(4.dp)), contentAlignment = Alignment.Center) {
+                        Text(if(latest.computedLabel == "주행") "D" else if(latest.computedLabel == "충전") "C" else "P", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
-                        Text("주차 39시간 23분", color = Color(0xFFFCA311), fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text("7월 17일 17:10 부터", color = Color.Gray, fontSize = 11.sp)
+                        Text(cardTitle, color = Color(0xFFFCA311), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text(cardSubtitle, color = Color.Gray, fontSize = 11.sp)
                     }
                 }
             }
@@ -769,27 +797,28 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF252538), RoundedCornerShape(14.dp)).padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("⚙️ 타이어 공기압", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        Text("7월 17일 17:10 | 🌡️ 30.5°C", color = Color.Gray, fontSize = 11.sp)
+                        // 🛠️ [해결 6] 타이어 헤더 시간 및 외기 온도 하드코딩 제거 및 실시간 연동
+                        Text("${sdfFull.format(Date(latest.date))} | 🌡️ ${latest.outsideTemp ?: 27.0}°C", color = Color.Gray, fontSize = 11.sp)
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     val pBox = Modifier.weight(1f).background(Color(0xFF1C1C27), RoundedCornerShape(8.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(8.dp)).padding(10.dp)
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("앞 왼쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsFL ?: 33.7} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
-                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("앞 오른쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsFR ?: 34.1} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
+                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("앞 왼쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsFL ?: 33.0} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
+                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("앞 오른쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsFR ?: 33.4} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("뒤 왼쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsRL ?: 34.1} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
-                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("뒤 오른쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsRR ?: 34.1} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
+                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("뒤 왼쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsRL ?: 33.7} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
+                        Column(modifier = pBox, horizontalAlignment = Alignment.CenterHorizontally) { Text("뒤 오른쪽", color = Color.Gray, fontSize = 11.sp); Text("${latest.tpmsRR ?: 33.7} psi", color = Color(0xFFFCA311), fontWeight = FontWeight.Bold) }
                     }
                 }
             }
 
             item {
-                Text("7월 17일 변동 로그", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+                // 🛠️ [해결 7] 하드코딩된 로그 텍스트 헤더 날짜 유연화
+                Text("${sdfDateOnly.format(Date(latest.date))} 변동 로그", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
             }
 
-            // 배터리 변화도 없고 거리 변화도 없는 무의미한 대기 노드는 필터링 후 렌더링 배제
             items(states.filter { it.batteryDelta != 0.0 || it.distanceDelta != 0.0 }) { log ->
                 Row(
                     modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(12.dp)).padding(14.dp),
@@ -810,7 +839,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                             val bSign = if (log.batteryDelta >= 0) "▲" else "▼"
                             Text("$bSign ${String.format(Locale.US, "%.1f", Math.abs(log.batteryDelta))}%", color = if(log.batteryDelta>=0) Color(0xFF34C759) else Color(0xFFFF3B30), fontSize = 12.sp)
                             
-                            // 주행 거리 증가치 포착 시 블루 스케일 강조 지표 생성
                             if (log.distanceDelta > 0.0) {
                                 Text("🚗 +${String.format(Locale.US, "%.1f", log.distanceDelta)} km", color = Color(0xFF2685FF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
@@ -825,12 +853,12 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-B. 주행 정보 탭 (종합 교차 정렬 맵 매핑 복원)
+// 4-B. 주행 정보 탭
 // ==========================================
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
     val drivingLogs by vm.drivingLogs.collectAsState()
-    val combinedPoints by vm.combinedDrivingPoints.collectAsState() // 교차 시간순 정렬 처리가 끝난 루트 데이터 사용
+    val combinedPoints by vm.combinedDrivingPoints.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxWidth().height(260.dp).background(Color(0xFF13131C), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
@@ -840,7 +868,6 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
                     cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(combinedPoints.last(), 12f) }
                 ) {
                     TileOverlay(tileProvider = UrlTileProvider(256, 256) { x, y, z -> URL("https://tile.openstreetmap.fr/hot/$z/$x/$y.png") })
-                    // 교차 검증된 전체 궤적 선형 동선을 블루 스케일로 정밀 렌더링
                     Polyline(points = combinedPoints, color = Color(0xFF2685FF), width = 10f)
                 }
             } else {
@@ -867,13 +894,12 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-C. 월간 내역 탭 (이원화 검색 조건 및 마스터 합산 패널 연산 이식)
+// 4-C. 월간 내역 탭
 // ==========================================
 @Composable
 fun MonthlyReportView(vm: TeslaViewModel) {
     val reports by vm.monthlyData.collectAsState()
     
-    // 🛠️ [해결] 읽기 전용 State 대리자 컴파일 에러 예방을 위해 var를 val로 완벽 교정 완료
     val sYear by vm.startYear.collectAsState()
     val sMonth by vm.startMonth.collectAsState()
     val eYear by vm.endYear.collectAsState()
@@ -886,11 +912,10 @@ fun MonthlyReportView(vm: TeslaViewModel) {
     val endFilterKey = "$eYear-$eMonth"
     val filteredReports = reports.filter { it.monthKey >= startFilterKey && it.monthKey <= endFilterKey }
 
-    // 선택한 이원화 범위 데이터 다차원 애그리게이션 연산
     val totalRangeDistance = filteredReports.sumOf { it.totalDistance }
     val totalRangeDrivingKM = filteredReports.sumOf { it.drivingKM }
     val totalRangeChargeKwh = filteredReports.sumOf { (it.chargingPercent / 100.0) * 62.1 * it.factor }
-    val totalRangeChargeCount = filteredReports.size * 4 // 가중치 기반 빈도 스케일링
+    val totalRangeChargeCount = filteredReports.size * 4
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF161622), RoundedCornerShape(12.dp)).padding(12.dp)) {
@@ -898,7 +923,6 @@ fun MonthlyReportView(vm: TeslaViewModel) {
             Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 
-                // 시작 년-월 선택 조건 유닛
                 Box(modifier = Modifier.weight(1f)) {
                     var exp by remember { mutableStateOf(false) }
                     Text("시작: $sYear-$sMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { exp = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
@@ -911,7 +935,6 @@ fun MonthlyReportView(vm: TeslaViewModel) {
                 
                 Text("~", color = Color.White, fontSize = 14.sp)
                 
-                // 종료 년-월 선택 조건 유닛
                 Box(modifier = Modifier.weight(1f)) {
                     var exp by remember { mutableStateOf(false) }
                     Text("종료: $eYear-$eMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { exp = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
@@ -926,7 +949,6 @@ fun MonthlyReportView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 선택 영역의 다차원 누적 수치를 계측하여 종합 요약해주는 독립 마스터 카드 패널
         Column(
             modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2A2A3F), RoundedCornerShape(14.dp)).padding(16.dp)
         ) {
@@ -966,7 +988,7 @@ fun MonthlyReportView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-D. 배터리 탭 (안정 빌드 유지 전용 컴포넌트)
+// 4-D. 배터리 탭
 // ==========================================
 @Composable
 fun BatteryTrendView(vm: TeslaViewModel) {
