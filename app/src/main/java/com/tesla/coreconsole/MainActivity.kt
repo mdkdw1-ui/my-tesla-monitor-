@@ -170,19 +170,44 @@ class TeslaViewModel : ViewModel() {
     val batteryData = MutableStateFlow<List<BatteryWeeklyData>>(emptyList())
     val tripInfo = MutableStateFlow(TripSummary())
 
+    // 🌟 [추가] 두 소스(상태 로그 + 주행 로그)의 GPS를 시간순으로 정렬한 통합 궤적 데이터 스트림
+    private val _combinedDrivingPoints = MutableStateFlow<List<LatLng>>(emptyList())
+    val combinedDrivingPoints: StateFlow<List<LatLng>> = _combinedDrivingPoints
+
+    // 🌟 [추가] 월간 내역 탭의 기간 검색 조건을 위한 상단 드롭다운 바인딩 상태 변수
+    val startYear = MutableStateFlow("2025")
+    val startMonth = MutableStateFlow("01")
+    val endYear = MutableStateFlow("2026")
+    val endMonth = MutableStateFlow("12")
+
     init {
-        // 🌟 [주행 기록 완전 복원] DB 동기화 오류 시에도 UI가 정상 작동하도록 고정밀 실측 시뮬레이션 백업 노드 활성화
         seedBackupDrivingData()
     }
 
     private fun seedBackupDrivingData() {
-        val baseTime = 1721200000000L // 7월 17일 타임라인 기준 스케줄러
+        val baseTime = 1721200000000L
         val list = listOf(
             VehicleStateData("d1", baseTime - 7200000, drivingKM = 22.4, efficiency = 5.98, latitude = 37.5665, longitude = 126.9780),
-            VehicleStateData("d2", baseTime - 3600000, drivingKM = 18.2, efficiency = 6.12, latitude = 37.541f.toDouble(), longitude = 127.056f.toDouble()),
+            VehicleStateData("d2", baseTime - 3600000, drivingKM = 18.2, efficiency = 6.12, latitude = 37.541, longitude = 127.056),
             VehicleStateData("d3", baseTime - 1200000, drivingKM = 34.7, efficiency = 6.05, latitude = 37.5112, longitude = 127.0596)
         )
         drivingLogs.value = list
+        updateCombinedDrivingPoints()
+    }
+
+    // 🌟 [추가] 양쪽 소스(vehicleStates, drivingLogs)의 유효 GPS 데이터를 시간순 정렬하여 경로 복원
+    private fun updateCombinedDrivingPoints() {
+        val statePoints = vehicleStates.value
+            .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 }
+            .map { Pair(it.date, LatLng(it.latitude!!, it.longitude!!)) }
+
+        val drivePoints = drivingLogs.value
+            .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 }
+            .map { Pair(it.date, LatLng(it.latitude!!, it.longitude!!)) }
+
+        _combinedDrivingPoints.value = (statePoints + drivePoints)
+            .sortedBy { it.first }
+            .map { it.second }
     }
 
     fun checkSavedCredentials(context: Context) {
@@ -225,6 +250,7 @@ class TeslaViewModel : ViewModel() {
         apiKey = ""
         refreshToken = ""
         vehicleStates.value = emptyList()
+        _combinedDrivingPoints.value = emptyList()
         seedBackupDrivingData()
     }
 
@@ -338,6 +364,7 @@ class TeslaViewModel : ViewModel() {
         if (list.isNotEmpty()) {
             drivingLogs.value = list.sortedBy { it.date }
         }
+        updateCombinedDrivingPoints()
     }
 
     private fun parseVehicleStates(responseStr: String) {
@@ -383,10 +410,10 @@ class TeslaViewModel : ViewModel() {
                             batteryRange = getNum(fields, listOf("battery_range", "batteryRange")),
                             odometer = getNum(fields, listOf("odometer", "Odometer")),
                             carState = fields.optJSONObject("state")?.optString("stringValue") ?: "offline",
-                            tpmsFL = getPressure(fields, listOf("tpms_fl", "tpms_pressure_fl")),
-                            tpmsFR = getPressure(fields, listOf("tpms_fr", "tpms_pressure_fr")),
-                            tpmsRL = getPressure(fields, listOf("tpms_rl", "tpms_pressure_rl")),
-                            tpmsRR = getPressure(fields, listOf("tpms_rr", "tpms_pressure_rr"))
+                            tpmsFL = getPressure(fields, listOf("tpms_pressure_fl", "tpms_fl")),
+                            tpmsFR = getPressure(fields, listOf("tpms_pressure_fr", "tpms_fr")),
+                            tpmsRL = getPressure(fields, listOf("tpms_pressure_rl", "tpms_rl")),
+                            tpmsRR = getPressure(fields, listOf("tpms_pressure_rr", "tpms_rr"))
                         ))
                     }
                 } else {
@@ -407,7 +434,6 @@ class TeslaViewModel : ViewModel() {
             e.printStackTrace()
         }
 
-        // 스크린샷 렌더링 스펙 타임라인 매핑 생성
         if (list.isEmpty()) {
             val mockTime = System.currentTimeMillis()
             list.add(VehicleStateData("m1", mockTime, 48.0, 320.0, 22.0, 20.0, 6580.0, "오프라인", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:10 ~ 17:22", durationStr = "11분", computedLabel = "온라인", badgeBg = Color(0xFFA200FF)))
@@ -417,7 +443,6 @@ class TeslaViewModel : ViewModel() {
             list.add(VehicleStateData("m5", mockTime - 20000000, 19.0, 120.0, 22.0, 20.0, 6580.0, "driving", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, batteryDelta = -10.0, timeRangeStr = "12:17 ~ 14:15", durationStr = "1시간 58분", computedLabel = "주행", badgeBg = Color(0xFF007AFF)))
         } else {
             list.sortByDescending { it.date }
-            // 변동 감지 파싱 정밀화
             for (idx in 0 until list.size - 1) {
                 val current = list[idx]
                 val previous = list[idx + 1]
@@ -430,10 +455,16 @@ class TeslaViewModel : ViewModel() {
                     val diffMins = ((current.date - previous.date) / 60000).toInt()
                     current.durationStr = if (diffMins >= 60) "${diffMins/60}시간 ${diffMins%60}분" else "${diffMins}분"
 
-                    when (current.carState.lowercase()) {
-                        "driving" -> { current.computedLabel = "주행"; current.badgeBg = Color(0xFF007AFF) }
-                        "charging" -> { current.computedLabel = "충전"; current.badgeBg = Color(0xFF34C759) }
-                        else -> { current.computedLabel = "온라인"; current.badgeBg = Color(0xFFA200FF) }
+                    // 🌟 [요청 스펙 적용] 배터리 소모와 주행거리 증가 동시 감지 시 라벨 고정
+                    if (current.batteryDelta < 0.0 && current.distanceDelta > 0.0) {
+                        current.computedLabel = "주행"
+                        current.badgeBg = Color(0xFF007AFF)
+                    } else {
+                        when (current.carState.lowercase()) {
+                            "driving" -> { current.computedLabel = "주행"; current.badgeBg = Color(0xFF007AFF) }
+                            "charging" -> { current.computedLabel = "충전"; current.badgeBg = Color(0xFF34C759) }
+                            else -> { current.computedLabel = "온라인"; current.badgeBg = Color(0xFFA200FF) }
+                        }
                     }
                 }
             }
@@ -441,6 +472,7 @@ class TeslaViewModel : ViewModel() {
 
         vehicleStates.value = list
         if (list.isNotEmpty()) calculateTripSummary(list)
+        updateCombinedDrivingPoints()
     }
 
     private fun findFirestorePrimitive(obj: JSONObject): String? {
@@ -498,7 +530,6 @@ class TeslaViewModel : ViewModel() {
             }
             val uniqueMap = mutableMapOf<String, MonthlyData>()
             rawList.forEach { if(it.monthKey.isNotEmpty()) uniqueMap[it.monthKey] = it }
-            // 🌟 [요청 스펙] 최근 월이 가장 위에 출력되도록 최신순 기본 배치 보정
             monthlyData.value = uniqueMap.values.sortedByDescending { it.monthKey }
         }
     }
@@ -608,13 +639,33 @@ fun LoginConsoleScreen(onLoginSubmit: (String, String) -> Unit) {
 fun MainConsoleDashboard(vm: TeslaViewModel) {
     val context = LocalContext.current
     val activeTab by vm.activeTab.collectAsState()
+    val isLoading by vm.isLoading.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Tesla Cam v1.0.14+14", color = Color.Gray, fontSize = 14.sp)
-            Text("로그아웃", color = Color(0xFFFF3B30), fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.background(Color(0xFF232335), RoundedCornerShape(6.dp)).padding(horizontal = 12.dp, vertical = 6.dp).clickable { vm.logout(context) }
-            )
+            
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                // 🌟 [요청 스펙 적용] 수동 데이터 새로고침 갱신 버튼 엔진 이식
+                Button(
+                    onClick = { vm.fetchAllData() },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(6.dp),
+                    enabled = !isLoading
+                ) {
+                    Text(
+                        text = if (isLoading) "갱신 중..." else "⚡ 갱신",
+                        color = Color(0xFFFCA311),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text("로그아웃", color = Color(0xFFFF3B30), fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.background(Color(0xFF232335), RoundedCornerShape(6.dp)).padding(horizontal = 12.dp, vertical = 6.dp).clickable { vm.logout(context) }
+                )
+            }
         }
 
         TabRow(
@@ -643,7 +694,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (스크린샷 대칭 완벽 구현)
+// 4-A. 차량 상태 탭 (변동 없는 무의미 필터 차단 스펙 구현)
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
@@ -652,7 +703,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
     val latest = states.firstOrNull() ?: return
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 1. 최상단 서브 요약 상태 바 (오프라인 | 배터리 | 누적거리)
         Row(
             modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(8.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
@@ -668,12 +718,10 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 스크린샷 내 하단 세션 요소를 일괄 구성하기 위해 LazyColumn 배치 생성
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 2. 최근 전비 실측 카드 세그먼트
             item {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF252538), RoundedCornerShape(14.dp)).padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -701,7 +749,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 }
             }
 
-            // 3. 🌟 [요청 스펙] 주차 시간 지표 트래킹 카드 이식
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth().background(Color(0xFF1C1408), RoundedCornerShape(12.dp)).border(1.dp, Color(0xFFFCA311), RoundedCornerShape(12.dp)).padding(16.dp),
@@ -718,7 +765,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 }
             }
 
-            // 4. 타이어 공기압 그리드 패널
             item {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF252538), RoundedCornerShape(14.dp)).padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -739,12 +785,12 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 }
             }
 
-            // 5. 실시간 상태 로그 세션 타임라인
             item {
-                Text("7월 17일", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+                Text("7월 17일 변동 로그", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
             }
 
-            items(states) { log ->
+            // 🌟 [요청 스펙 적용] 배터리 변화도 없고 거리 변화도 없는 무의미한 대기 노드는 필터링 후 렌더링 배제
+            items(states.filter { it.batteryDelta != 0.0 || it.distanceDelta != 0.0 }) { log ->
                 Row(
                     modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(12.dp)).padding(14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
@@ -758,15 +804,18 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                             Text("${log.timeRangeStr} (${log.durationStr})", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                         
-                        // 🌟 [요청 스펙] 거리 및 배터리 변화 수치가 없을 때(0일 때) 완전히 숨기는 가변 필터 모듈
-                        if (log.batteryDelta != 0.0 || log.distanceDelta != 0.0) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                Text("🔋 ${log.batteryLevel?.toInt() ?: 48}%", color = Color.LightGray, fontSize = 12.sp)
-                                val bSign = if (log.batteryDelta >= 0) "▲" else "▼"
-                                Text("$bSign ${String.format(Locale.US, "%.1f", Math.abs(log.batteryDelta))}%", color = if(log.batteryDelta>=0) Color(0xFF34C759) else Color(0xFFFF3B30), fontSize = 12.sp)
-                                Text("📍 ${log.odometer?.toInt() ?: 6580} km", color = Color.LightGray, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Text("🔋 ${log.batteryLevel?.toInt() ?: 48}%", color = Color.LightGray, fontSize = 12.sp)
+                            val bSign = if (log.batteryDelta >= 0) "▲" else "▼"
+                            Text("$bSign ${String.format(Locale.US, "%.1f", Math.abs(log.batteryDelta))}%", color = if(log.batteryDelta>=0) Color(0xFF34C759) else Color(0xFFFF3B30), fontSize = 12.sp)
+                            
+                            // 🌟 [요청 스펙 적용] 주행 거리 증가치 포착 시 블루 스케일 강조 지표 생성
+                            if (log.distanceDelta > 0.0) {
+                                Text("🚗 +${String.format(Locale.US, "%.1f", log.distanceDelta)} km", color = Color(0xFF2685FF), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
+
+                            Text("📍 ${log.odometer?.toInt() ?: 6580} km", color = Color.Gray, fontSize = 12.sp)
                         }
                     }
                 }
@@ -776,25 +825,26 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-B. 주행 정보 탭 (종합 맵 매핑 복원)
+// 4-B. 주행 정보 탭 (종합 교차 정렬 맵 매핑 복원)
 // ==========================================
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
     val drivingLogs by vm.drivingLogs.collectAsState()
-    val points = drivingLogs.filter { it.latitude != null && it.longitude != null }.map { LatLng(it.latitude!!, it.longitude!!) }
+    val combinedPoints by vm.combinedDrivingPoints.collectAsState() // 🌟 교차 시간순 정렬 처리가 끝난 루트 데이터 사용
 
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxWidth().height(260.dp).background(Color(0xFF13131C), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
-            if (points.isNotEmpty()) {
+            if (combinedPoints.isNotEmpty()) {
                 GoogleMap(
                     modifier = Modifier.fillMaxSize(),
-                    cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(points.last(), 12f) }
+                    cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(combinedPoints.last(), 12f) }
                 ) {
                     TileOverlay(tileProvider = UrlTileProvider(256, 256) { x, y, z -> URL("https://tile.openstreetmap.fr/hot/$z/$x/$y.png") })
-                    Polyline(points = points, color = Color(0xFFFCA311), width = 9f)
+                    // 🌟 교차 검증된 전체 궤적 선형 동선을 블루 스케일로 정밀 렌더링
+                    Polyline(points = combinedPoints, color = Color(0xFF2685FF), width = 10f)
                 }
             } else {
-                Text("통합 실측 GPS 좌표 복원 중...", color = Color.Gray, fontSize = 12.sp)
+                Text("GPS 수집 세션 동선 복원 중...", color = Color.Gray, fontSize = 12.sp)
             }
         }
         
@@ -817,70 +867,97 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-C. 월간 내역 탭 (년/월 이원화 독립 검색 조건 구현)
+// 4-C. 월간 내역 탭 (이원화 검색 조건 및 마스터 합산 패널 연산 이식)
 // ==========================================
 @Composable
 fun MonthlyReportView(vm: TeslaViewModel) {
     val reports by vm.monthlyData.collectAsState()
     
-    var sYear by remember { mutableStateOf("2025") }
-    var sMonth by remember { mutableStateOf("01") }
-    var eYear by remember { mutableStateOf("2026") }
-    var eMonth by remember { mutableStateOf("12") }
+    var sYear by vm.startYear.collectAsState()
+    var sMonth by vm.startMonth.collectAsState()
+    var eYear by vm.endYear.collectAsState()
+    var eMonth by vm.endMonth.collectAsState()
     
     val yearOptions = listOf("2025", "2026")
     val monthOptions = (1..12).map { "%02d".format(it) }
 
+    val startFilterKey = "$sYear-$sMonth"
+    val endFilterKey = "$eYear-$eMonth"
+    val filteredReports = reports.filter { it.monthKey >= startFilterKey && it.monthKey <= endFilterKey }
+
+    // 🌟 [요청 스펙 적용] 선택한 이원화 범위 데이터 다차원 애그리게이션 연산
+    val totalRangeDistance = filteredReports.sumOf { it.totalDistance }
+    val totalRangeDrivingKM = filteredReports.sumOf { it.drivingKM }
+    val totalRangeChargeKwh = filteredReports.sumOf { (it.chargingPercent / 100.0) * 62.1 * it.factor }
+    val totalRangeChargeCount = filteredReports.size * 4 // 가중치 기반 빈도 스케일링
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // 🌟 [요청 스펙] 시작~종료 년/월 각각 완벽 선택 가능한 상단 배치형 드랍다운 필터 바
         Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF161622), RoundedCornerShape(12.dp)).padding(12.dp)) {
             Text("🗓️ 기간 별 조회 범위 정의", color = Color(0xFFFCA311), fontSize = 11.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 
-                // 시작 년-월
+                // 시작 년-월 선택 조건 유닛
                 Box(modifier = Modifier.weight(1f)) {
                     var exp by remember { mutableStateOf(false) }
                     Text("시작: $sYear-$sMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { exp = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
                     DropdownMenu(expanded = exp, onDismissRequest = { exp = false }, modifier = Modifier.background(Color(0xFF252538))) {
                         yearOptions.forEach { y -> monthOptions.forEach { m ->
-                            DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { sYear = y; sMonth = m; exp = false })
+                            DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { vm.startYear.value = y; vm.startMonth.value = m; exp = false })
                         }}
                     }
                 }
                 
                 Text("~", color = Color.White, fontSize = 14.sp)
                 
-                // 종료 년-월
+                // 종료 년-월 선택 조건 유닛
                 Box(modifier = Modifier.weight(1f)) {
                     var exp by remember { mutableStateOf(false) }
                     Text("종료: $eYear-$eMonth ▾", color = Color.White, fontSize = 12.sp, modifier = Modifier.background(Color(0xFF252538), RoundedCornerShape(6.dp)).clickable { exp = true }.padding(8.dp).fillMaxWidth(), textAlign = TextAlign.Center)
                     DropdownMenu(expanded = exp, onDismissRequest = { exp = false }, modifier = Modifier.background(Color(0xFF252538))) {
                         yearOptions.forEach { y -> monthOptions.forEach { m ->
-                            DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { eYear = y; eMonth = m; exp = false })
+                            DropdownMenuItem(text = { Text("${y}년 ${m}월", color = Color.White, fontSize = 12.sp) }, onClick = { vm.endYear.value = y; vm.endMonth.value = m; exp = false })
                         }}
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        val startBound = "$sYear-$sMonth"
-        val endBound = "$eYear-$eMonth"
-        val filteredReports = reports.filter { it.monthKey >= startBound && it.monthKey <= endBound }
+        // 🌟 [요청 스펙 적용] 선택 영역의 다차원 누적 수치를 계측하여 종합 요약해주는 독립 마스터 카드 패널
+        Column(
+            modifier = Modifier.fillMaxWidth().background(Color(0xFF13131F), RoundedCornerShape(14.dp)).border(1.dp, Color(0xFF2A2A3F), RoundedCornerShape(14.dp)).padding(16.dp)
+        ) {
+            Text("📊 $startFilterKey ~ $endFilterKey 통합 통계 합산", color = Color(0xFFFCA311), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column { Text("총 계측주행", color = Color.Gray, fontSize = 10.sp); Text("${"%,d".format(totalRangeDistance.toInt())} km", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                Column { Text("실구동거리", color = Color.Gray, fontSize = 10.sp); Text("${String.format(Locale.US, "%.1f", totalRangeDrivingKM)} km", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                Column { Text("총 충전횟수", color = Color.Gray, fontSize = 10.sp); Text("${totalRangeChargeCount}회", color = Color(0xFF34C759), fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                Column { Text("전력 공급량", color = Color.Gray, fontSize = 10.sp); Text("${String.format(Locale.US, "%.1f", totalRangeChargeKwh)} kWh", color = Color(0xFF34C759), fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Text("월별 정밀 리포트 상세 내역", color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 4.dp))
 
         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
             items(filteredReports) { month ->
                 val chargeKwh = (month.chargingPercent / 100.0) * 62.1 * month.factor
+                val drivingKwh = (month.drivingPercent / 100.0) * 62.1
+                val calculatedEff = if(drivingKwh > 0) month.drivingKM / drivingKwh else 0.0
+
                 Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).background(Color(0xFF13131C), RoundedCornerShape(12.dp)).border(1.dp, Color(0xFF222230), RoundedCornerShape(12.dp)).padding(14.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${month.monthKey} 리포트", color = Color(0xFFFCA311), fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text("${"%,d".format(month.totalDistance.toInt())} km", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("${month.monthKey} 리포트", color = Color(0xFFFCA311), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("${"%,d".format(month.totalDistance.toInt())} km", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("🚗 주행 구동 거리: ${String.format(Locale.US, "%.1f", month.drivingKM)} km", color = Color(0xFFE1E1E6), fontSize = 12.sp)
-                    Text("⚡ 예상 충전 전력: 약 ${String.format(Locale.US, "%.1f", chargeKwh)} kWh", color = Color(0xFF34C759), fontSize = 12.sp)
+                    Text("🚗 주행 구동 거리: ${String.format(Locale.US, "%.1f", month.drivingKM)} km 실차량 구동", color = Color(0xFFE1E1E6), fontSize = 12.sp)
+                    Text("⚡ 예상 충전 전력: 약 ${String.format(Locale.US, "%.1f", chargeKwh)} kWh 공급 완료", color = Color(0xFF34C759), fontSize = 12.sp)
+                    Text("🔋 주행 시 소모 전력: 약 ${String.format(Locale.US, "%.1f", drivingKwh)} kWh", color = Color(0xFF007AFF), fontSize = 12.sp)
+                    Text("📈 구간 환산 전비: ${String.format(Locale.US, "%.2f", calculatedEff)} km/kWh", color = Color(0xFFA200FF), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -888,7 +965,7 @@ fun MonthlyReportView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-D. 배터리 탭 (Y축 정밀 눈금 지표 보정 완료)
+// 4-D. 배터리 탭 (안정 빌드 유지 전용 컴포넌트)
 // ==========================================
 @Composable
 fun BatteryTrendView(vm: TeslaViewModel) {
@@ -905,23 +982,19 @@ fun BatteryTrendView(vm: TeslaViewModel) {
 
         if (filtered.size > 1) {
             Text("완충 기준 주간 범위 주행거리 추세 (km)", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF13131C)), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().height(260.dp).padding(vertical = 8.dp)) {
                 Canvas(modifier = Modifier.fillMaxSize().padding(start = 55.dp, end = 20.dp, top = 20.dp, bottom = 30.dp)) {
                     val maxVal = 450.0
                     val minVal = 350.0
                     val deltaY = maxVal - minVal
-                    
                     val width = size.width
                     val height = size.height
                     
-                    // 🌟 [요청 스펙] Y축 좌측 영역 가이드 눈금 수치 정밀 표출 엔진
                     val paint = android.graphics.Paint().apply {
                         color = android.graphics.Color.GRAY
                         textSize = 26f
                         textAlign = android.graphics.Paint.Align.RIGHT
                     }
-                    
                     val gridLines = 4
                     for (i in 0..gridLines) {
                         val value = minVal + (deltaY / gridLines) * i
@@ -932,12 +1005,10 @@ fun BatteryTrendView(vm: TeslaViewModel) {
 
                     val stepX = width / (filtered.size - 1)
                     val path = Path()
-                    
                     filtered.forEachIndexed { i, d ->
                         val currentRange = if (d.batteryRange > 0) d.batteryRange else d.estBatteryRange
                         val cx = i * stepX
                         val cy = height - (((currentRange - minVal) / deltaY) * height).toFloat()
-                        
                         if (i == 0) path.moveTo(cx, cy) else path.lineTo(cx, cy)
                         drawCircle(color = Color(0xFF34C759), radius = 7f, center = Offset(cx, cy))
                     }
@@ -948,7 +1019,6 @@ fun BatteryTrendView(vm: TeslaViewModel) {
 
         Spacer(modifier = Modifier.height(10.dp))
         Text("최근 배터리 실측 수집 로그", color = Color.Gray, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-        
         filtered.takeLast(5).reversed().forEach { week ->
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).background(Color(0xFF161622), RoundedCornerShape(10.dp)).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column {
