@@ -24,6 +24,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -148,7 +150,7 @@ object EncryptEngine {
 }
 
 // ==========================================
-// 3. VIEWMODEL LAYER
+// 3. VIEWMODEL LAYER (텍스트 덤프 기능 장착)
 // ==========================================
 class TeslaViewModel : ViewModel() {
     private val VEHICLE_ID = "3744141651867089"
@@ -163,6 +165,10 @@ class TeslaViewModel : ViewModel() {
     val activeTab = MutableStateFlow(TabType.STATUS)
     val isLoading = MutableStateFlow(false)
     val errorMsg = MutableStateFlow<String?>(null)
+
+    // 🛠️ 스키마 분석용 Raw JSON 상태 흐름 필드 추가
+    val rawJsonState = MutableStateFlow("")
+    val rawJsonDriving = MutableStateFlow("")
 
     val vehicleStates = MutableStateFlow<List<VehicleStateData>>(emptyList())
     val drivingLogs = MutableStateFlow<List<VehicleStateData>>(emptyList())
@@ -215,7 +221,7 @@ class TeslaViewModel : ViewModel() {
             apiKey = EncryptEngine.decrypt(savedKey)
             refreshToken = EncryptEngine.decrypt(savedToken)
             _isLoggedIn.value = true
-            fetchAllData()
+            fetchAllData(context)
         }
     }
 
@@ -234,7 +240,7 @@ class TeslaViewModel : ViewModel() {
             apiKey = keyInput.trim()
             refreshToken = tokenInput.trim()
             _isLoggedIn.value = true
-            fetchAllData()
+            fetchAllData(context)
         } catch (e: Exception) {
             onFail("보안 엔진 초기화 실패")
         }
@@ -247,11 +253,14 @@ class TeslaViewModel : ViewModel() {
         apiKey = ""
         refreshToken = ""
         vehicleStates.value = emptyList()
+        rawJsonState.value = ""
+        rawJsonDriving.value = ""
         _combinedDrivingPoints.value = emptyList()
         seedBackupDrivingData()
     }
 
-    fun fetchAllData() {
+    // 🛠️ 파일 저장을 위해 Context 파라미터 구조 수신 연동
+    fun fetchAllData(context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             isLoading.value = true
             errorMsg.value = null
@@ -271,6 +280,12 @@ class TeslaViewModel : ViewModel() {
                 val stateRes = postRequest(queryUrl, accessToken, statePayload)
                 val drivingRes = postRequest(queryUrl, accessToken, drivingPayload)
 
+                // 🛠️ [덤프 기능 활성화] 수신 데이터를 상태용 흐름에 파싱 전 선제 백업 보관 및 파일 저장
+                rawJsonState.value = stateRes
+                rawJsonDriving.value = drivingRes
+                saveTextFileDump(context, "vehicle_state_schema.txt", stateRes)
+                saveTextFileDump(context, "driving_schema.txt", drivingRes)
+
                 parseVehicleStates(stateRes)
                 parseNetworkDrivingLogs(drivingRes)
                 fetchMonthlyReport(accessToken)
@@ -281,6 +296,18 @@ class TeslaViewModel : ViewModel() {
             } finally {
                 isLoading.value = false
             }
+        }
+    }
+
+    // 🛠️ 폰 내부 로컬 전용 파일 출력 스트림엔진 구축
+    private fun saveTextFileDump(context: Context, filename: String, content: String) {
+        try {
+            context.openFileOutput(filename, Context.MODE_PRIVATE).use { output ->
+                output.write(content.toByteArray())
+            }
+            android.util.Log.d("SCHEMA_DUMP", "[$filename] 로컬 저장 성공! 경로: ${context.filesDir}/$filename")
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -304,7 +331,7 @@ class TeslaViewModel : ViewModel() {
                         put("op", "AND")
                         put("filters", JSONArray().apply {
                             put(JSONObject().apply { put("fieldFilter", JSONObject().apply { put("field", JSONObject().apply { put("fieldPath", "date") }); put("op", "GREATER_THAN_OR_EQUAL"); put("value", JSONObject().apply { put("integerValue", fromMs.toString()) }) }) })
-                            put(JSONObject().apply { put("fieldFilter", JSONObject().apply { put("field", JSONObject().apply { put("fieldPath", "date") }); put("op", "LESS_THAN_OR_EQUAL"); put("value", JSONObject().apply { put("integerValue", toMs.toString()) }) }) })
+                            put(JSONObject().apply { put("fieldFilter", JSONObject().apply { put("field", JSONObject().apply { put("fieldPath", "date") }); put("op", "LESS_THAN_OR_EQUAL"); put("value", JSONObject().apply { put("integerValue", fromMs.toString()) }) }) })
                         })
                     })
                 })
@@ -448,8 +475,6 @@ class TeslaViewModel : ViewModel() {
         if (list.isEmpty()) {
             val mockTime = System.currentTimeMillis()
             list.add(VehicleStateData("m1", mockTime, 48.0, 320.0, 22.0, 20.0, 6580.0, "오프라인", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:10 ~ 17:22", durationStr = "11분", computedLabel = "온라인", badgeBg = Color(0xFFA200FF)))
-            list.add(VehicleStateData("m2", mockTime - 600000, 48.0, 320.0, 22.0, 20.0, 6580.0, "driving", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:08 ~ 17:10", durationStr = "2분", computedLabel = "주행", badgeBg = Color(0xFF007AFF)))
-            list.add(VehicleStateData("m3", mockTime - 1200000, 48.0, 320.0, 22.0, 20.0, 6580.0, "online", false, 33.7, 34.1, 34.1, 34.1, 37.5, 127.0, timeRangeStr = "17:06 ~ 17:08", durationStr = "1분", computedLabel = "온라인", badgeBg = Color(0xFFA200FF)))
         } else {
             list.sortByDescending { it.date }
 
@@ -574,12 +599,6 @@ class TeslaViewModel : ViewModel() {
                 }
             }
         }
-        if (list.isEmpty()) {
-            list.add(BatteryWeeklyData("2026_W01", 420.0, 0.0, 421.0, "1월 1주", 6000.0, 0L, "2026"))
-            list.add(BatteryWeeklyData("2026_W02", 418.0, 0.0, 419.5, "1월 2주", 6200.0, 0L, "2026"))
-            list.add(BatteryWeeklyData("2026_W03", 422.0, 0.0, 423.0, "1월 3주", 6400.0, 0L, "2026"))
-            list.add(BatteryWeeklyData("2026_W04", 421.0, 0.0, 421.8, "1월 4주", 6580.0, 0L, "2026"))
-        }
         batteryData.value = list.sortedBy { it.weekKey }
     }
 }
@@ -660,7 +679,7 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
             
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
-                    onClick = { vm.fetchAllData() },
+                    onClick = { vm.fetchAllData(context) },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                     shape = RoundedCornerShape(6.dp),
@@ -706,12 +725,18 @@ fun MainConsoleDashboard(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-A. 차량 상태 탭 (날짜별 묶음 그룹화 빌드 완료)
+// 4-A. 차량 상태 탭 (데이터 복사/덤프 브릿지 연동)
 // ==========================================
 @Composable
 fun StatusDashboardView(vm: TeslaViewModel) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    
     val states by vm.vehicleStates.collectAsState()
     val trip by vm.tripInfo.collectAsState()
+    val rawState by vm.rawJsonState.collectAsState()
+    val rawDriving by vm.rawJsonDriving.collectAsState()
+    
     val latest = states.firstOrNull() ?: return
 
     val sdfFull = remember { SimpleDateFormat("M월 d일 HH:mm", Locale.getDefault()) }
@@ -808,7 +833,6 @@ fun StatusDashboardView(vm: TeslaViewModel) {
                 }
             }
 
-            // 🛠️ [해결] 로그 목록을 실시간 날짜별로 그루핑(groupBy)하여 멀티 헤더 출력 엔진 구축
             val filteredLogs = states.filter { it.batteryDelta != 0.0 || it.distanceDelta != 0.0 }
             val groupedLogs = filteredLogs.groupBy { sdfDateOnly.format(Date(it.date)) }
 
@@ -848,6 +872,57 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 
                                 Text("📍 ${log.odometer?.toInt() ?: 6580} km", color = Color.Gray, fontSize = 12.sp)
                             }
+                        }
+                    }
+                }
+            }
+
+            // 🛠️ [신규 개발자 패널] 화면 최하단에 스키마 분석용 원본 복사 패널 주입
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp, bottom = 24.dp)
+                        .background(Color(0xFF161622), RoundedCornerShape(14.dp))
+                        .border(1.dp, Color(0xFF2D2D44), RoundedCornerShape(14.dp))
+                        .padding(16.dp)
+                ) {
+                    Text("🛠️ 스키마 분석용 텍스트 덤프 엔진", color = Color(0xFFFCA311), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("갱신 시 파일이 내부 스토리지에 자동 저장됩니다. 아래 버튼을 눌러 원본 JSON을 클립보드에 복사해 GitHub나 Termux 문서로 전환하세요.", color = Color.Gray, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.height(14.dp))
+                    
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                if (rawState.isNotBlank()) {
+                                    clipboardManager.setText(AnnotatedString(rawState))
+                                    android.widget.Toast.makeText(context, "차량 상태 JSON이 복사되었습니다!", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(context, "복사할 데이터가 없습니다. 상단 [갱신]을 먼저 누르세요.", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("상태 JSON 복사", color = Color.White, fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = {
+                                if (rawDriving.isNotBlank()) {
+                                    clipboardManager.setText(AnnotatedString(rawDriving))
+                                    android.widget.Toast.makeText(context, "주행 로그 JSON이 복사되었습니다!", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(context, "복사할 데이터가 없습니다. 상단 [갱신]을 먼저 누르세요.", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252538)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("주행 JSON 복사", color = Color.White, fontSize = 12.sp)
                         }
                     }
                 }
