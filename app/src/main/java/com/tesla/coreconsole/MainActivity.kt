@@ -103,7 +103,6 @@ data class VehicleStateData(
     var distanceDelta: Double = 0.0,
     var durationStr: String = "",
     var timeRangeStr: String = "",
-    // 🛠️ [조절] 실측 주행의 고정밀 이동 좌표 리스트 보관용 필드 추가 (기본값 제공으로 하위 호환성 유지)
     val pathPoints: List<LatLng> = emptyList()
 )
 
@@ -195,20 +194,21 @@ class TeslaViewModel : ViewModel() {
         updateCombinedDrivingPoints()
     }
 
-    // 🛠️ [조절] 수집된 location_list 내부의 다중 좌표 배열을 지도 동선에 통째로 결합 빌드하도록 개선
+    // 🛠️ [안정성 강화] NaN 및 무효(0.0) 좌표 필터엔진 결합 부 최적화
     private fun updateCombinedDrivingPoints() {
         val statePoints = vehicleStates.value
-            .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 }
+            .filter { it.latitude != null && it.longitude != null && it.latitude != 0.0 && it.longitude != 0.0 && !it.latitude.isNaN() && !it.longitude.isNaN() }
             .map { Pair(it.date, LatLng(it.latitude!!, it.longitude!!)) }
 
         val drivePoints = mutableListOf<Pair<Long, LatLng>>()
         drivingLogs.value.forEach { log ->
             if (log.pathPoints.isNotEmpty()) {
-                // 배열 내 다중 좌표들을 시간 순서 유지를 위해 미세 인덱스 오프셋을 붙여 순차 로딩
                 log.pathPoints.forEachIndexed { idx, latLng ->
-                    drivePoints.add(Pair(log.date + idx, latLng))
+                    if (!latLng.latitude.isNaN() && !latLng.longitude.isNaN()) {
+                        drivePoints.add(Pair(log.date + idx, latLng))
+                    }
                 }
-            } else if (log.latitude != null && log.longitude != null && log.latitude != 0.0 && log.longitude != 0.0) {
+            } else if (log.latitude != null && log.longitude != null && log.latitude != 0.0 && log.longitude != 0.0 && !log.latitude.isNaN() && !log.longitude.isNaN()) {
                 drivePoints.add(Pair(log.date, LatLng(log.latitude, log.longitude)))
             }
         }
@@ -332,7 +332,7 @@ class TeslaViewModel : ViewModel() {
         client.newCall(req).execute().use { return it.body?.string() ?: "" }
     }
 
-    // 🛠️ [조절] 확인된 Firestore 실측 driving 스키마 규격으로 완벽하게 연동 가공
+    // 🛠️ [안정성 완벽 튜닝] optDouble 제거 및 안전한 기본형 변환 로직으로 교체 완료
     private fun parseNetworkDrivingLogs(responseStr: String) {
         if (responseStr.isBlank() || responseStr.trim().startsWith("null")) return
         val list = mutableListOf<VehicleStateData>()
@@ -347,22 +347,19 @@ class TeslaViewModel : ViewModel() {
                     ?: fields.optJSONObject("date")?.optLong("integerValue") ?: 0L
                 if (dDate == 0L) continue
 
-                // 1) 기존 구형 필드 대신 실측 필드인 moveKM 데이터 가져오기
-                val dKM = fields.optJSONObject("moveKM")?.optString("doubleValue")?.toDoubleOrNull()
-                    ?: fields.optJSONObject("moveKM")?.optDouble("doubleValue") ?: 0.0
+                val moveKMObj = fields.optJSONObject("moveKM")
+                val dKM = if (moveKMObj != null) findFirestorePrimitive(moveKMObj)?.toDoubleOrNull() ?: 0.0 else 0.0
 
-                // 2) useBattery(소모 배터리 %) 및 배터리 총팩 용량(62.1 kWh)을 기준으로 실시간 전비 계산 연산
-                val useBattery = fields.optJSONObject("useBattery")?.optString("doubleValue")?.toDoubleOrNull()
-                    ?: fields.optJSONObject("useBattery")?.optDouble("doubleValue") ?: 0.0
+                val useBatteryObj = fields.optJSONObject("useBattery")
+                val useBattery = if (useBatteryObj != null) findFirestorePrimitive(useBatteryObj)?.toDoubleOrNull() ?: 0.0 else 0.0
+                
                 val efficiency = if (useBattery > 0.0) {
                     val kwhUsed = (useBattery / 100.0) * 62.1
                     if (kwhUsed > 0.0) String.format(Locale.US, "%.2f", dKM / kwhUsed).toDoubleOrNull() ?: 0.0 else 0.0
                 } else 0.0
 
-                // 3) 주행 소요 시간 필드 파싱 (UI 표출용)
                 val durationStr = fields.optJSONObject("drivingTime")?.optString("stringValue") ?: ""
 
-                // 4) 핵심: location_list 배열 내부의 다중 고정밀 위경도 매핑 추출
                 val pathPoints = mutableListOf<LatLng>()
                 val locListObj = fields.optJSONObject("location_list")
                 val locArray = locListObj?.optJSONObject("arrayValue")?.optJSONArray("values")
@@ -370,27 +367,28 @@ class TeslaViewModel : ViewModel() {
                     for (j in 0 until locArray.length()) {
                         val locItem = locArray.optJSONObject(j) ?: continue
                         val locFields = locItem.optJSONObject("mapValue")?.optJSONObject("fields") ?: continue
-                        val lat = locFields.optJSONObject("latitude")?.optDouble("doubleValue") ?: 0.0
-                        val lng = locFields.optJSONObject("longitude")?.optDouble("doubleValue") ?: 0.0
-                        if (lat != 0.0 && lng != 0.0) {
+                        
+                        val latObj = locFields.optJSONObject("latitude")
+                        val lngObj = locFields.optJSONObject("longitude")
+                        
+                        val lat = if (latObj != null) findFirestorePrimitive(latObj)?.toDoubleOrNull() ?: 0.0 else 0.0
+                        val lng = if (lngObj != null) findFirestorePrimitive(lngObj)?.toDoubleOrNull() ?: 0.0 else 0.0
+                        
+                        // 0.0 또는 NaN 좌표 검사 후 추가하여 구글맵 예외 차단
+                        if (lat != 0.0 && lng != 0.0 && !lat.isNaN() && !lng.isNaN()) {
                             pathPoints.add(LatLng(lat, lng))
                         }
                     }
                 }
 
-                // 대표 좌표는 궤적의 마지막 지점으로 바인딩하여 안정성 확보
                 val primaryLat = pathPoints.lastOrNull()?.latitude
                 val primaryLng = pathPoints.lastOrNull()?.longitude
 
                 list.add(VehicleStateData(
                     id = doc.optString("name").split("/").lastOrNull() ?: "",
-                    date = dDate, 
-                    drivingKM = dKM, 
-                    efficiency = efficiency,
-                    latitude = primaryLat, 
-                    longitude = primaryLng,
-                    durationStr = durationStr,
-                    pathPoints = pathPoints
+                    date = dDate, drivingKM = dKM, efficiency = efficiency,
+                    latitude = primaryLat, longitude = primaryLng,
+                    durationStr = durationStr, pathPoints = pathPoints
                 ))
             }
         } catch (e: Exception) {
@@ -894,7 +892,7 @@ fun StatusDashboardView(vm: TeslaViewModel) {
 }
 
 // ==========================================
-// 4-B. 주행 정보 탭 (지도시각화 최적화 튜닝 완료)
+// 4-B. 주행 정보 탭
 // ==========================================
 @Composable
 fun DrivingHistoryView(vm: TeslaViewModel) {
@@ -909,7 +907,6 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
                     cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(combinedPoints.last(), 14f) }
                 ) {
                     TileOverlay(tileProvider = UrlTileProvider(256, 256) { x, y, z -> URL("https://tile.openstreetmap.fr/hot/$z/$x/$y.png") })
-                    // 🛠️ [조절] location_list에서 파싱해 낸 촘촘한 세션 동선 궤적 데이터를 지도 위에 오버레이 드로잉
                     Polyline(points = combinedPoints, color = Color(0xFF2685FF), width = 12f)
                 }
             } else {
@@ -927,7 +924,6 @@ fun DrivingHistoryView(vm: TeslaViewModel) {
                         val sdf = SimpleDateFormat("MM월 dd일 HH:mm", Locale.getDefault())
                         Text(sdf.format(Date(log.date)), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         
-                        // 🛠️ [조절] 수집된 소요 시간(Time)과 자동 계산된 실시간 연산 전비를 서브텍스트로 출력
                         val specSubText = if (log.durationStr.isNotEmpty()) {
                             "시간: ${log.durationStr} | 평균 전비: ${log.efficiency} km/kWh"
                         } else {
